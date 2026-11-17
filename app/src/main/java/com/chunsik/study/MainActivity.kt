@@ -1,0 +1,381 @@
+package com.chunsik.study
+
+import android.Manifest
+import android.app.NotificationManager
+import android.content.*
+import android.os.Build
+import android.os.Bundle
+import android.os.SystemClock
+import android.provider.Settings
+import android.net.Uri
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.*
+import androidx.compose.ui.draw.clip
+import java.time.temporal.ChronoUnit
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.*
+import kotlinx.coroutines.delay
+import java.time.*
+import java.time.temporal.TemporalAdjusters
+import java.util.Calendar
+
+private data class Palette(val bg:Color,val card:Color,val accent:Color,val text:Color,val muted:Color,val onAccent:Color)
+private val palettes=listOf(
+    Palette(Color(0xFFE9EDE5),Color(0xFFFAFAF6),Color(0xFF718B7A),Color(0xFF34473A),Color(0xFF667E6D),Color.White),
+    Palette(Color(0xFF202724),Color(0xFF303B35),Color(0xFF52695A),Color(0xFFF4F2EA),Color(0xFFB9C8BC),Color.White),
+    Palette(Color(0xFFECEEF0),Color(0xFFFAFAFB),Color(0xFF697D92),Color(0xFF34465A),Color(0xFF677989),Color.White),
+    Palette(Color(0xFFF2EBDF),Color(0xFFFFF9F0),Color(0xFFA48B70),Color(0xFF514539),Color(0xFF867461),Color.White),
+    Palette(Color(0xFFEEEAF2),Color(0xFFFAF8FC),Color(0xFF8C829E),Color(0xFF494155),Color(0xFF857C91),Color.White)
+)
+private val colorSet=listOf(Color(0xFF789C81),Color(0xFFC7A371),Color(0xFF859DC1),Color(0xFFB487A5),Color(0xFF66A8A1))
+private val words=listOf("오늘도 할 수 있다.","오늘의 노력이 내일을 만든다.","꾸준함은 재능을 이긴다.","조금씩, 그러나 계속.","오늘의 한 시간이 쌓인다.","포기하지 않는 하루.","어제보다 한 걸음 더.")
+
+class MainActivity:ComponentActivity(){
+    private val store by lazy {Store(this)}
+    private val appPrefs by lazy { getSharedPreferences("app",0) }
+    private val timerPrefs by lazy { getSharedPreferences("timer",0) }
+    private var selectedScreen by mutableStateOf(0)
+    private var refreshKey by mutableIntStateOf(0)
+    private var permissionLauncher:androidx.activity.result.ActivityResultLauncher<String>?=null
+    private val receiver=object:BroadcastReceiver(){override fun onReceive(context:Context?,intent:Intent?){refreshKey++}}
+    override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState)
+        if(!StudyService.alive && timerPrefs.getBoolean("running",false)) {
+            val sid=timerPrefs.getLong("subject",-1)
+            val start=timerPrefs.getLong("spanStart",System.currentTimeMillis())
+            val checkpoint=timerPrefs.getLong("checkpoint",start)
+            if(sid!=-1L && checkpoint>start)store.recordActiveSpan(sid,start,checkpoint)
+            timerPrefs.edit().putBoolean("running",false).putBoolean("paused",false).remove("subject").apply()
+        }
+        Backups(this,store).checkMonthly()
+        if(Build.VERSION.SDK_INT>=33){
+            permissionLauncher=registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+            permissionLauncher?.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        val filter=IntentFilter("com.chunsik.study.REFRESH")
+        if(Build.VERSION.SDK_INT>=33) registerReceiver(receiver,filter,RECEIVER_NOT_EXPORTED) else registerReceiver(receiver,filter)
+        setContent { StudyApp() }
+    }
+    override fun onDestroy(){try{unregisterReceiver(receiver)}catch(_:Exception){};super.onDestroy()}
+    override fun onStop(){super.onStop();if(!isChangingConfigurations && (timerPrefs.getBoolean("running",false)||timerPrefs.getBoolean("paused",false))) sendAction(StudyService.ACTION_OVERLAY)}
+    override fun onStart(){super.onStart();sendAction(StudyService.ACTION_HIDE)}
+    private fun sendAction(action:String,subject:Long=-1) {val intent=Intent(this,StudyService::class.java).setAction(action).putExtra("subject",subject)
+        try{if(action==StudyService.ACTION_START)startForegroundService(intent) else if(StudyService.alive) startService(intent)}catch(_:Exception){}
+        refreshKey++
+    }
+    @Composable private fun StudyApp(){
+        var theme by remember { mutableIntStateOf(appPrefs.getInt("theme",0)) }
+        val pal=palettes[theme.coerceIn(0,4)]
+        val selectedQuote=remember{words.random()}
+        var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(Unit){while(true){tick=System.currentTimeMillis();delay(1000)}}
+        val force=refreshKey // snapshot invalidation after writes
+        val subjects=remember(force){
+            val raw=store.subjects()
+            val order=appPrefs.getString("subjectOrder","").orEmpty().split(",").mapNotNull{it.toLongOrNull()}
+            raw.sortedWith(compareBy<Subject>({val index=order.indexOf(it.id);if(index<0) Int.MAX_VALUE else index},{it.id}))
+        }
+        val records=remember(force){store.records()}
+        val plans=remember(force){store.plans()}
+        val events=remember(force){store.events()}
+        Column(Modifier.fillMaxSize().background(pal.bg).statusBarsPadding()){
+            Column(Modifier.fillMaxWidth().background(pal.accent).padding(horizontal=18.dp, vertical=15.dp),horizontalAlignment=Alignment.CenterHorizontally){
+                Text("오늘의 공부",fontSize=12.sp,color=pal.onAccent.copy(alpha=.85f),modifier=Modifier.align(Alignment.Start))
+                Spacer(Modifier.height(8.dp));Text(selectedQuote,fontWeight=FontWeight.SemiBold,fontSize=19.sp,color=pal.onAccent)
+            }
+            Box(Modifier.weight(1f)){
+                when(selectedScreen){
+                    0->TimerPage(pal,subjects,records,tick)
+                    1->SchedulePage(pal,subjects,plans)
+                    2->CalendarPage(pal,events,records)
+                    3->StatsPage(pal,subjects,records)
+                    else->SettingsPage(pal,subjects,records,theme,{theme=it;appPrefs.edit().putInt("theme",it).apply()})
+                }
+            }
+            Row(Modifier.fillMaxWidth().background(pal.accent).navigationBarsPadding().padding(horizontal=4.dp, vertical=6.dp),horizontalArrangement=Arrangement.SpaceAround){
+                val names=listOf("타이머","시간표","캘린더","통계","설정")
+                val icons=listOf(Icons.Default.Timer,Icons.Default.DateRange,Icons.Default.CalendarMonth,Icons.Default.PieChart,Icons.Default.Settings)
+                names.forEachIndexed {i,label->
+                    Column(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if(selectedScreen==i) pal.onAccent.copy(alpha=.17f) else Color.Transparent).clickable{selectedScreen=i}.padding(vertical=8.dp),horizontalAlignment=Alignment.CenterHorizontally){
+                        Icon(icons[i],null,tint=pal.onAccent,modifier=Modifier.size(22.dp));Text(label,color=pal.onAccent,fontSize=11.sp)
+                    }
+                }
+            }
+        }
+    }
+    @Composable private fun Card(p:Palette,content:@Composable ColumnScope.()->Unit){Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(17.dp)).background(p.card).padding(15.dp),verticalArrangement=Arrangement.spacedBy(11.dp),content=content)}
+    @Composable private fun Heading(p:Palette,title:String,subtitle:String="") { Column {if(subtitle.isNotBlank())Text(subtitle,fontSize=10.sp,color=p.muted);Text(title,fontWeight=FontWeight.Bold,fontSize=20.sp,color=p.text)} }
+    @Composable private fun PrimaryButton(p:Palette,label:String,enabled:Boolean=true,onClick:()->Unit){ Button(onClick=onClick,enabled=enabled,colors=ButtonDefaults.buttonColors(containerColor=p.accent),shape=RoundedCornerShape(12.dp)){Text(label,color=p.onAccent)} }
+    @Composable private fun TimerPage(p:Palette,subjects:List<Subject>,records:List<StudyRecord>,tick:Long){
+        val running=timerPrefs.getBoolean("running",false);val paused=timerPrefs.getBoolean("paused",false)
+        val subjectId=timerPrefs.getLong("subject",-1)
+        val chosen=subjects.find{it.id==subjectId}
+        val today=LocalDate.now()
+        var lastSubject by remember { mutableLongStateOf(subjects.firstOrNull()?.id?:-1L) }
+        var manageSubjects by remember { mutableStateOf(false) }
+        var newSubject by remember { mutableStateOf("") }
+        var editId by remember { mutableLongStateOf(-1L) }
+        var editName by remember { mutableStateOf("") }
+        var subjectMessage by remember { mutableStateOf("") }
+        fun reorder(id:Long,delta:Int) {
+            val ids=subjects.map{it.id}.toMutableList()
+            val i=ids.indexOf(id)
+            if(i>=0 && i+delta in ids.indices) {
+                val other=ids[i+delta];ids[i+delta]=ids[i];ids[i]=other
+                appPrefs.edit().putString("subjectOrder",ids.joinToString(",")).apply()
+                refreshKey++
+            }
+        }
+        val count=records.filter{Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).toLocalDate()==today}.sumOf{it.seconds}
+        val goal=store.targetFor(today)
+        val secs=if(running) ((tick-timerPrefs.getLong("spanStart",tick))/1000).coerceAtLeast(0) else 0L
+        LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(13.dp)) {
+            item {Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Heading(p,"학습 타이머","TIMER");Text(if(running)"공부 중" else if(paused)"일시정지" else "대기 중",color=p.muted,fontSize=12.sp)} }
+            item {Card(p){
+                if(running||paused){
+                    Text(chosen?.name?:"과목",color=p.muted,modifier=Modifier.align(Alignment.CenterHorizontally))
+                    Text(formatClock(secs+timerPrefs.getLong("sessionSeconds",0)),fontFamily=FontFamily.Monospace,fontSize=39.sp,fontWeight=FontWeight.Bold,color=p.text,modifier=Modifier.align(Alignment.CenterHorizontally))
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.Center,verticalAlignment=Alignment.CenterVertically){
+                        PrimaryButton(p,if(running)"Ⅱ 일시정지" else "▶ 이어하기"){sendAction(if(running)StudyService.ACTION_PAUSE else StudyService.ACTION_RESUME)}
+                        Spacer(Modifier.width(10.dp)); OutlinedButton(onClick={sendAction(StudyService.ACTION_END)}){Text("■ 종료",color=p.text)}
+                    }
+                } else {
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
+                        Text("공부할 과목을 선택하세요",color=p.text,fontWeight=FontWeight.SemiBold,fontSize=14.sp)
+                        TextButton(onClick={manageSubjects=!manageSubjects;subjectMessage="";editId=-1L}){
+                            Icon(if(manageSubjects) Icons.Default.Close else Icons.Default.Edit,null,tint=p.accent,modifier=Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if(manageSubjects)"완료" else "편집",color=p.accent)
+                        }
+                    }
+                    if(!manageSubjects){
+                        subjects.forEach{subject->
+                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).clickable{lastSubject=subject.id;sendAction(StudyService.ACTION_START,subject.id)}.padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text(subject.name,color=p.text,fontSize=14.sp);Icon(Icons.Default.PlayArrow,null,tint=p.accent)}
+                        }
+                    }else{
+                        subjects.forEachIndexed{index,sub->
+                            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).padding(9.dp)){
+                                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+                                    Text(sub.name,color=p.text,fontSize=14.sp,modifier=Modifier.weight(1f))
+                                    IconButton(onClick={reorder(sub.id,-1)},enabled=index>0,modifier=Modifier.size(34.dp)){Icon(Icons.Default.KeyboardArrowUp,"위로",tint=p.muted)}
+                                    IconButton(onClick={reorder(sub.id,1)},enabled=index<subjects.lastIndex,modifier=Modifier.size(34.dp)){Icon(Icons.Default.KeyboardArrowDown,"아래로",tint=p.muted)}
+                                    IconButton(onClick={editId=if(editId==sub.id)-1L else sub.id;editName=sub.name},modifier=Modifier.size(34.dp)){Icon(Icons.Default.Edit,"이름 변경",tint=p.accent)}
+                                    IconButton(onClick={if(store.deleteSubject(sub.id)){refreshKey++;subjectMessage="과목을 삭제했어."}else subjectMessage="공부 기록이나 계획이 있는 과목은 삭제할 수 없어."},modifier=Modifier.size(34.dp)){Icon(Icons.Default.Delete,"삭제",tint=p.muted)}
+                                }
+                                if(editId==sub.id){
+                                    OutlinedTextField(value=editName,onValueChange={editName=it},modifier=Modifier.fillMaxWidth(),singleLine=true,label={Text("과목 이름")})
+                                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){
+                                        TextButton(onClick={editId=-1L}){Text("취소",color=p.muted)}
+                                        TextButton(onClick={
+                                            val name=editName.trim()
+                                            if(name.isBlank() || subjects.any{it.id!=sub.id&&it.name==name}) subjectMessage="비어 있거나 중복된 과목 이름이야."
+                                            else runCatching{store.renameSubject(sub.id,name)}.onSuccess{editId=-1L;refreshKey++;subjectMessage="과목 이름을 변경했어."}.onFailure{subjectMessage="이름 변경에 실패했어."}
+                                        }){Text("저장",color=p.accent)}
+                                    }
+                                }
+                            }
+                        }
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                            OutlinedTextField(value=newSubject,onValueChange={newSubject=it},modifier=Modifier.weight(1f),singleLine=true,label={Text("새 과목")})
+                            PrimaryButton(p,"추가"){
+                                val name=newSubject.trim()
+                                if(name.isBlank() || subjects.any{it.name==name}) subjectMessage="비어 있거나 중복된 과목 이름이야."
+                                else {store.addSubject(name);newSubject="";refreshKey++;subjectMessage="과목을 추가했어."}
+                            }
+                        }
+                        if(subjectMessage.isNotBlank())Text(subjectMessage,color=p.muted,fontSize=12.sp)
+                    }
+                }
+            }}
+            item {Card(p){
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("오늘의 목표",fontWeight=FontWeight.SemiBold,color=p.text);Text(if(store.isRest(today))"휴식일" else if(goal==0L)"목표 없음" else "${(count*100/goal)}%",color=p.muted)}
+                LinearProgressIndicator(progress={if(goal>0) (count.toFloat()/goal).coerceIn(0f,1f) else 0f},modifier=Modifier.fillMaxWidth().height(8.dp),color=p.accent,trackColor=p.bg,strokeCap=StrokeCap.Round)
+                Text("공부 ${formatClock(count)}  /  목표 ${if(goal==0L)"없음" else formatClock(goal)}",color=p.muted,fontSize=12.sp)
+            }}
+            item {Card(p){Text("과목별 공부 기록",fontWeight=FontWeight.SemiBold,color=p.text)
+                subjects.forEach{s->Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text(s.name,color=p.text,fontSize=13.sp);Text(formatClock(records.filter{it.subjectId==s.id&&Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).toLocalDate()==today}.sumOf{it.seconds}),color=p.muted,fontSize=13.sp,fontFamily=FontFamily.Monospace)} }
+            }}
+        }
+    }
+    @Composable private fun SchedulePage(p:Palette,subjects:List<Subject>,plans:List<Plan>){
+        var date by remember {mutableStateOf(LocalDate.now())}
+        var editing by remember {mutableStateOf(false)}
+        var subject by remember {mutableLongStateOf(subjects.firstOrNull()?.id?:-1L)}
+        var start by remember {mutableIntStateOf(1140)};var end by remember {mutableIntStateOf(1230)}
+        var mode by remember {mutableStateOf("weekly")}
+        var error by remember {mutableStateOf("")}
+        val week=date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        val current=store.plansFor(date)
+        LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            item {Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Heading(p,"주간 시간표","SCHEDULE");TextButton(onClick={date=LocalDate.now()}){Text("오늘",color=p.accent)} }}
+            item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){IconButton(onClick={date=date.minusWeeks(1)}){Icon(Icons.Default.ChevronLeft,null,tint=p.text)};Text("${week.monthValue}.${week.dayOfMonth} ~ ${week.plusDays(6).monthValue}.${week.plusDays(6).dayOfMonth}",color=p.text);IconButton(onClick={date=date.plusWeeks(1)}){Icon(Icons.Default.ChevronRight,null,tint=p.text)}}
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){(0..6).forEach{i->val d=week.plusDays(i.toLong());Column(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if(date==d)p.accent else p.bg).clickable{date=d;editing=false}.padding(vertical=8.dp),horizontalAlignment=Alignment.CenterHorizontally){Text(listOf("월","화","수","목","금","토","일")[i],color=if(date==d)p.onAccent else p.text,fontSize=12.sp);Text("${d.dayOfMonth}",color=if(date==d)p.onAccent else p.muted,fontSize=11.sp)} }}
+            }}
+            item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("${date.monthValue}월 ${date.dayOfMonth}일 계획",color=p.muted,fontSize=12.sp);Text(if(store.isRest(date))"휴식일" else "${current.sumOf{it.endMinute-it.startMinute}/60.0}시간 목표",color=p.text,fontSize=18.sp,fontWeight=FontWeight.SemiBold)};PrimaryButton(p,"+ 추가"){editing=!editing;error=""}}
+                if(store.isRest(date))Text("휴식일에는 계획과 목표가 적용되지 않아.",color=p.muted,fontSize=12.sp)
+                else if(current.isEmpty())Text("등록된 공부 계획이 없어.",color=p.muted)
+                else current.forEach{plan->Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).padding(10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text(plan.subject,color=p.text);Text("${formatMinute(plan.startMinute)} ~ ${formatMinute(plan.endMinute)}",color=p.muted,fontSize=12.sp)};IconButton(onClick={store.deletePlan(plan.id);refreshKey++}){Icon(Icons.Default.Delete,null,tint=p.muted)}}}
+            }}
+            if(editing) item {Card(p){
+                Text("공부 계획 추가",fontWeight=FontWeight.Bold,color=p.text)
+                Text("과목 선택",fontSize=12.sp,color=p.muted)
+                SubjectPicker(subjects,subject,p,Modifier.fillMaxWidth()){subject=it}
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)){
+                    Column(Modifier.weight(1f)){Text("시작",color=p.muted,fontSize=12.sp);MinutePicker(start,(60..1410 step 30).toList(),p,Modifier.fillMaxWidth()){start=it}}
+                    Column(Modifier.weight(1f)){Text("종료",color=p.muted,fontSize=12.sp);MinutePicker(end,(90..1440 step 30).toList(),p,Modifier.fillMaxWidth()){end=it}}
+                }
+                Text("적용 방식",fontSize=12.sp,color=p.muted)
+                ChoicePicker(listOf("매주 반복" to "weekly","해당 날짜 변경" to "replace","해당 날짜 추가" to "add"),mode,p,Modifier.fillMaxWidth()){mode=it}
+                if(error.isNotEmpty())Text(error,color=Color(0xFFAA5544),fontSize=12.sp)
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){
+                    PrimaryButton(p,"계획 저장"){if(store.addPlan(date.dayOfWeek.value,date.toString(),subject,start,end,mode)){editing=false;refreshKey++}else error="시간이 겹치거나 범위가 올바르지 않아."}
+                }
+            }}
+        }
+    }
+    @Composable private fun CalendarPage(p:Palette,events:List<CalendarEvent>,records:List<StudyRecord>){
+        var selected by remember {mutableStateOf(LocalDate.now())};var month by remember {mutableStateOf(LocalDate.now().withDayOfMonth(1))}
+        var expanded by remember {mutableStateOf(false)};var form by remember {mutableStateOf(false)}
+        var name by remember {mutableStateOf("")};var type by remember {mutableStateOf("exam")};var time by remember {mutableStateOf("09:00")};var repeat by remember {mutableStateOf("none")}
+        val exam=events.filter{it.type=="exam"&&it.repeat=="none"&&LocalDate.parse(it.date)>=LocalDate.now()}.minByOrNull{it.date}
+        val days=month.lengthOfMonth();val pad=month.dayOfWeek.value%7
+        val dayEvents=store.eventsFor(selected)
+        var horizontal by remember {mutableFloatStateOf(0f)};var vertical by remember {mutableFloatStateOf(0f)}
+        LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            item {Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Heading(p,"학습 캘린더","CALENDAR");TextButton(onClick={selected=LocalDate.now();month=selected.withDayOfMonth(1);expanded=true}){Text("오늘",color=p.accent)}}}
+            if(exam!=null) item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Column{Text("다가오는 시험",fontSize=11.sp,color=p.muted);Text(exam.name,color=p.text,fontWeight=FontWeight.SemiBold)};Text("D-${ChronoUnit.DAYS.between(LocalDate.now(),LocalDate.parse(exam.date))}",color=p.accent,fontWeight=FontWeight.Bold,fontSize=19.sp)}}}
+            item {Card(p){
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){IconButton(onClick={month=month.minusMonths(1)}){Icon(Icons.Default.ChevronLeft,null,tint=p.text)};Text("${month.year}년 ${month.monthValue}월",fontWeight=FontWeight.SemiBold,color=p.text);IconButton(onClick={month=month.plusMonths(1)}){Icon(Icons.Default.ChevronRight,null,tint=p.text)}}
+                Row(Modifier.fillMaxWidth()){listOf("일","월","화","수","목","금","토").forEach{Text(it,color=p.muted,fontSize=12.sp,modifier=Modifier.weight(1f),textAlign=TextAlign.Center)}}
+                // Collapses into the selected week, preserving the selected date.
+                val first=if(expanded) ((selected.dayOfMonth+pad-1)/7)*7 else 0
+                val rowCount=if(expanded) 1 else (pad+days+6)/7
+                repeat(rowCount){r->Row(Modifier.fillMaxWidth()){
+                    repeat(7){c->val d=first+r*7+c-pad+1
+                        Box(Modifier.weight(1f).height(if(expanded)52.dp else 54.dp).padding(2.dp)){
+                            if(d in 1..days){val dd=month.withDayOfMonth(d);val rest=store.isRest(dd);val hasExam=store.eventsFor(dd).any{it.type=="exam"};Column(Modifier.fillMaxSize().clip(RoundedCornerShape(7.dp)).background(if(dd==selected)p.accent else p.bg).clickable{selected=dd;expanded=true;form=false}.padding(2.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){Text("$d",color=if(dd==selected)p.onAccent else p.text,fontSize=12.sp);if(rest)Text("휴식",fontSize=9.sp,color=if(dd==selected)p.onAccent else p.accent)else if(hasExam)Text("●",color=Color(0xFFC7A371),fontSize=9.sp)} }
+                        }
+                    }
+                }}
+                if(expanded){TextButton(onClick={expanded=false}){Text("⌄ 상세 닫기",color=p.muted)}}
+            }}
+            if(expanded) item {Card(p){
+                Column(Modifier.fillMaxWidth().pointerInput(selected){detectHorizontalDragGestures(onDragEnd={if(horizontal>50){selected=selected.minusDays(1)}else if(horizontal< -50){selected=selected.plusDays(1)};month=selected.withDayOfMonth(1);horizontal=0f}){change,drag->change.consume();horizontal+=drag}}.pointerInput(selected){detectVerticalDragGestures(onDragEnd={if(vertical>90)expanded=false;vertical=0f}){change,drag->if(drag>0)vertical+=drag}}){
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("${selected.monthValue}월 ${selected.dayOfMonth}일",color=p.muted,fontSize=12.sp);Text("선택한 날짜의 일정",fontWeight=FontWeight.SemiBold,color=p.text)};PrimaryButton(p,"+ 추가"){form=!form}}
+                    Spacer(Modifier.height(12.dp))
+                    if(dayEvents.isEmpty()){Column(Modifier.fillMaxWidth().padding(24.dp),horizontalAlignment=Alignment.CenterHorizontally){Icon(Icons.Default.EventAvailable,null,tint=p.accent);Text("등록된 일정이 없어.",color=p.muted)}}
+                    else dayEvents.forEach{ev->Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween){Text("${if(ev.type=="rest")"☕" else if(ev.type=="exam")"⚑" else "▣"} ${ev.name} · ${ev.clock}",fontSize=12.sp,color=p.text);IconButton(onClick={store.deleteEvent(ev.id);refreshKey++}){Icon(Icons.Default.Delete,null,tint=p.muted)}}}
+                    Spacer(Modifier.height(10.dp))
+                    val studied=records.filter{Instant.ofEpochMilli(it.start).atZone(ZoneId.systemDefault()).toLocalDate()==selected}.sumOf{it.seconds}
+                    val target=store.targetFor(selected)
+                    Column(Modifier.fillMaxWidth().background(p.bg,RoundedCornerShape(10.dp)).padding(12.dp)){Text("이날의 공부 기록",color=p.text,fontWeight=FontWeight.SemiBold);Text("총 공부 ${formatClock(studied)}",color=p.muted,fontSize=12.sp);Text(if(store.isRest(selected))"휴식일" else if(target==0L)"목표 없음" else "달성률 ${studied*100/target}%",color=p.muted,fontSize=12.sp)}
+                }
+            }}
+            if(expanded&&form) item {Card(p){Text("새 일정 추가",fontWeight=FontWeight.Bold,color=p.text)
+                ChoicePicker(listOf("시험" to "exam","개인공부" to "study","휴식" to "rest"),type,p){type=it}
+                if(type!="rest") TextField(value=name,onValueChange={name=it},label={Text("일정 이름")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                if(type!="rest") TextField(value=time,onValueChange={time=it},label={Text("시각 (HH:MM)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                ChoicePicker(listOf("반복 없음" to "none","매일" to "daily","매주" to "weekly","매월" to "monthly"),repeat,p){repeat=it}
+                PrimaryButton(p,"일정 저장",type=="rest"||name.isNotBlank()){store.addEvent(selected.toString(),if(type=="rest")"휴식" else name,type,time,repeat);form=false;name="";refreshKey++}
+            }}
+        }
+    }
+    @Composable private fun StatsPage(p:Palette,subjects:List<Subject>,records:List<StudyRecord>){
+        var mode by remember {mutableIntStateOf(0)};var offset by remember {mutableIntStateOf(0)}
+        val now=LocalDate.now()
+        val selected=when(mode){0->now.plusDays(offset.toLong());1->now.plusWeeks(offset.toLong());else->now.plusMonths(offset.toLong())}
+        val start=when(mode){0->selected;1->selected.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));else->selected.withDayOfMonth(1)}
+        val end=when(mode){0->start;1->start.plusDays(6);else->start.withDayOfMonth(start.lengthOfMonth())}
+        val vals=store.totalsIn(start,end);val total=vals.values.sum()
+        val shares=subjects.mapNotNull{s->val count=vals[s.id]?:0L;if(count>0)s to count else null}
+        LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            item {Heading(p,"학습 통계","STATISTICS")}
+            item {Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(p.card).padding(5.dp)){listOf("일간","주간","월간").forEachIndexed{i,s->Box(Modifier.weight(1f).clip(RoundedCornerShape(9.dp)).background(if(mode==i)p.accent else Color.Transparent).clickable{mode=i;offset=0}.padding(10.dp),contentAlignment=Alignment.Center){Text(s,color=if(mode==i)p.onAccent else p.text)}}}}
+            item {Card(p){Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween){IconButton(onClick={offset--}){Icon(Icons.Default.ChevronLeft,null,tint=p.text)};Text(if(mode==0)"$selected" else "$start ~ $end",color=p.text);IconButton(onClick={offset++}){Icon(Icons.Default.ChevronRight,null,tint=p.text)}}
+                Text(if(mode==0)"총 공부 시간" else if(mode==1)"주간 누적 공부 시간" else "월간 누적 공부 시간",color=p.muted,fontSize=12.sp)
+                Text(formatClock(total),color=p.text,fontWeight=FontWeight.Bold,fontSize=27.sp,fontFamily=FontFamily.Monospace)
+                if(mode==0){
+                    Column(Modifier.fillMaxWidth(),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(18.dp)){
+                        Box(Modifier.size(176.dp),contentAlignment=Alignment.Center){
+                            Canvas(Modifier.size(150.dp)){val stroke=20.dp.toPx();var angle=-90f; if(total==0L)drawArc(p.bg,0f,360f,false,style=androidx.compose.ui.graphics.drawscope.Stroke(stroke));shares.forEachIndexed{i,pair->val sweep=pair.second.toFloat()/total*360f;drawArc(colorSet[i%colorSet.size],angle,sweep,false,style=androidx.compose.ui.graphics.drawscope.Stroke(stroke));angle+=sweep}}
+                            Text(formatClock(total),fontSize=15.sp,color=p.text,fontFamily=FontFamily.Monospace,fontWeight=FontWeight.Bold)
+                        }
+                        if(shares.isEmpty())Text("아직 공부 기록이 없어.",color=p.muted,fontSize=12.sp)
+                        else Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)){
+                            shares.forEachIndexed{i,pair->
+                                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
+                                    Row(Modifier.weight(1f),verticalAlignment=Alignment.CenterVertically){
+                                        Box(Modifier.size(10.dp).background(colorSet[i%colorSet.size],RoundedCornerShape(3.dp)))
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(pair.first.name,color=p.text,fontSize=13.sp)
+                                    }
+                                    Text("${formatClock(pair.second)} · ${pair.second*100/total}%",color=p.muted,fontSize=12.sp)
+                                }
+                            }
+                        }
+                    }
+                }else{
+                    if(mode==1){val days=(0..6).map{start.plusDays(it.toLong())};BarSet(p,days.map{store.totalsFor(it).values.sum()},days.map{listOf("월","화","수","목","금","토","일")[it.dayOfWeek.value-1]})}
+                    shares.forEachIndexed{i,pair->Column{Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text(pair.first.name,color=p.text,fontSize=13.sp);Text("${formatClock(pair.second)} · ${(pair.second*100.0/total).toInt()}%",color=p.muted,fontSize=11.sp)};LinearProgressIndicator(progress={pair.second.toFloat()/total},modifier=Modifier.fillMaxWidth().height(8.dp),color=colorSet[i%colorSet.size],trackColor=p.bg)}}
+                    if(mode==2){Text("월별 학습 추세",color=p.text,fontWeight=FontWeight.SemiBold);val months=(0..10).map{start.minusMonths((10-it).toLong())};BarSet(p,months.map{store.totalsIn(it.withDayOfMonth(1),it.withDayOfMonth(it.lengthOfMonth())).values.sum()},months.map{"${it.monthValue}"})}
+                }
+            }}
+        }
+    }
+    @Composable private fun BarSet(p:Palette,values:List<Long>,labels:List<String>){val max=(values.maxOrNull()?:0L).coerceAtLeast(1)
+        Row(Modifier.fillMaxWidth().height(155.dp),horizontalArrangement=Arrangement.spacedBy(5.dp),verticalAlignment=Alignment.Bottom){values.forEachIndexed{i,v->Column(Modifier.weight(1f),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Bottom){Box(Modifier.fillMaxWidth().height((110f*v/max).coerceAtLeast(if(v>0)3f else 0f).dp).background(if(i==values.lastIndex)Color(0xFFC7A371) else p.accent,RoundedCornerShape(topStart=3.dp,topEnd=3.dp)));Text(labels[i],color=p.muted,fontSize=10.sp)}}}
+    }
+    @Composable private fun SettingsPage(p:Palette,subjects:List<Subject>,records:List<StudyRecord>,theme:Int,onTheme:(Int)->Unit){
+        var subsection by remember {mutableStateOf("")};var input by remember{mutableStateOf("")};var note by remember{mutableStateOf("")};var chosenId by remember{mutableLongStateOf(subjects.firstOrNull()?.id?:-1L)}
+        var focus by remember{mutableStateOf(appPrefs.getBoolean("focus",true))};var floating by remember{mutableStateOf(appPrefs.getBoolean("floating",true))}
+        val export=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")){uri->if(uri!=null)runCatching{contentResolver.openOutputStream(uri)?.bufferedWriter()?.use{it.write(store.snapshot())}}.onSuccess{note="백업 파일을 내보냈어."}.onFailure{note="내보내기 실패: ${it.message}"}}
+        val import=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->if(uri!=null)runCatching{val str=contentResolver.openInputStream(uri)?.bufferedReader()?.use{it.readText()}?:error("파일 읽기 실패");store.restore(str);refreshKey++}.onSuccess{note="복원 완료"}.onFailure{note="복원 실패: ${it.message}"}}
+        LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+            item {Row(verticalAlignment=Alignment.CenterVertically){if(subsection.isNotBlank())IconButton(onClick={subsection=""}){Icon(Icons.Default.ArrowBack,null,tint=p.text)};Heading(p,if(subsection.isBlank())"환경설정" else subsection,"SETTINGS")}}
+            if(subsection.isBlank()){
+                item {Card(p){Text("학습 관리",color=p.muted,fontSize=12.sp);listOf("과목 관리","공부 기록 관리").forEach{SettingsLink(p,it){subsection=it}}}}
+                item {Card(p){Text("사용 환경",color=p.muted,fontSize=12.sp);listOf("테마 설정","집중 모드","플로팅 타이머","응원 문구 관리").forEach{SettingsLink(p,it){subsection=it}}}}
+                item {Card(p){Text("데이터 관리",color=p.muted,fontSize=12.sp);SettingsLink(p,"백업 및 복원"){subsection="백업 및 복원"}}}
+            }else if(subsection=="과목 관리"){
+                item {Card(p){subjects.forEach{s->Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text(s.name,color=p.text);IconButton(onClick={if(!store.deleteSubject(s.id))note="기록이나 계획이 있는 과목은 삭제할 수 없어." else refreshKey++}){Icon(Icons.Default.Delete,null,tint=p.muted)}}};TextField(value=input,onValueChange={input=it},label={Text("새 과목")},modifier=Modifier.fillMaxWidth());PrimaryButton(p,"추가"){store.addSubject(input);input="";refreshKey++}}}
+            }else if(subsection=="테마 설정"){
+                item {Card(p){listOf("세이지 그린","다크 올리브","슬레이트 블루","웜 베이지","뮤트 라벤더").forEachIndexed{i,s->Row(Modifier.fillMaxWidth().clickable{onTheme(i)}.padding(9.dp),verticalAlignment=Alignment.CenterVertically){RadioButton(selected=theme==i,onClick={onTheme(i)});Text(s,color=p.text)}};Text("사용자 지정 테마는 다음 개발 단계에 연결 예정",color=p.muted,fontSize=12.sp)}}
+            }else if(subsection=="집중 모드"){
+                item {Card(p){Row(verticalAlignment=Alignment.CenterVertically){Checkbox(focus,onCheckedChange={focus=it;appPrefs.edit().putBoolean("focus",it).apply()});Text("공부 중 방해 금지 자동 실행",color=p.text,fontSize=14.sp)};Text("권한 승인 시 작동해. 공부 종료 시 앱이 켠 상태만 복원해.",color=p.muted,fontSize=12.sp);PrimaryButton(p,"방해 금지 권한 설정"){startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))}}}
+            }else if(subsection=="플로팅 타이머"){
+                item {Card(p){Row(verticalAlignment=Alignment.CenterVertically){Checkbox(floating,onCheckedChange={floating=it;appPrefs.edit().putBoolean("floating",it).apply()});Text("팝업 타이머 사용",color=p.text)};PrimaryButton(p,"화면 위에 표시 권한"){startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")))}}}
+            }else if(subsection=="백업 및 복원"){
+                item {Card(p){Text("자동 백업: 매달 첫 앱 실행 시",color=p.text);Text("6개월 지난 자동 백업만 삭제 · 원본 기록 영구 보관",color=p.muted,fontSize=12.sp);PrimaryButton(p,"백업 파일 내보내기"){export.launch("chunsik-study-${LocalDate.now()}.json")};OutlinedButton(onClick={import.launch(arrayOf("application/json","text/plain"))}){Text("백업 파일 가져오기")};Text("내부 자동 백업: ${Backups(this@MainActivity,store).snapshots().size}개",color=p.muted,fontSize=12.sp)}}
+            }else if(subsection=="공부 기록 관리"){
+                item {Card(p){Text("수동 기록 추가",color=p.text,fontWeight=FontWeight.Bold);SubjectPicker(subjects,chosenId,p){chosenId=it};TextField(value=input,onValueChange={input=it},label={Text("공부 시간 (분)")},keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Number),modifier=Modifier.fillMaxWidth());PrimaryButton(p,"오늘 기록에 추가",input.toLongOrNull()?.let{it>0}==true){val minutes=input.toLongOrNull()?:0;if(minutes>0){val now=System.currentTimeMillis();store.addRecord(chosenId,now-minutes*60000,now,minutes*60);refreshKey++;input=""}}}}
+                items(records.take(30).size){i->val r=records[i];Card(p){Text("${r.subject} · ${formatClock(r.seconds)}",color=p.text,fontSize=13.sp);Row{OutlinedButton(onClick={store.deleteRecord(r.id);refreshKey++}){Text("삭제")};Spacer(Modifier.width(8.dp));OutlinedButton(onClick={store.editRecord(r.id,(r.seconds-60).coerceAtLeast(1));refreshKey++}){Text("1분 줄이기")}}}}
+            }else if(subsection=="응원 문구 관리"){
+                item {Card(p){Text("기본 문구 ${words.size}개",color=p.text);Text("사용자 문구 추가 편집은 다음 단계에서 연결 예정",color=p.muted,fontSize=12.sp)}}
+            }
+            if(note.isNotBlank())item {Text(note,color=p.muted,fontSize=12.sp)}
+        }
+    }
+    @Composable private fun SettingsLink(p:Palette,text:String,onClick:()->Unit){Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(vertical=11.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text(text,color=p.text,fontSize=14.sp);Icon(Icons.Default.ChevronRight,null,tint=p.muted)}}
+    @Composable private fun SubjectPicker(subjects:List<Subject>,chosen:Long,p:Palette,modifier:Modifier=Modifier,onChange:(Long)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(subjects.firstOrNull{it.id==chosen}?.name?:"과목 선택",color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){subjects.forEach{s->DropdownMenuItem(text={Text(s.name)},onClick={onChange(s.id);expanded=false})}}}}
+    @Composable private fun MinutePicker(chosen:Int,options:List<Int>,p:Palette,modifier:Modifier=Modifier,onChange:(Int)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(formatMinute(chosen),color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){Box(Modifier.heightIn(max=340.dp).verticalScroll(rememberScrollState())){Column{options.forEach{x->DropdownMenuItem(text={Text(formatMinute(x))},onClick={onChange(x);expanded=false})}}}}}}
+    @Composable private fun ChoicePicker(options:List<Pair<String,String>>,chosen:String,p:Palette,modifier:Modifier=Modifier,onChange:(String)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(options.firstOrNull{it.second==chosen}?.first?:"선택",color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){options.forEach{(label,value)->DropdownMenuItem(text={Text(label)},onClick={onChange(value);expanded=false})}}}}
+}
+private fun formatMinute(minutes:Int):String="%02d:%02d".format(minutes/60,minutes%60)
