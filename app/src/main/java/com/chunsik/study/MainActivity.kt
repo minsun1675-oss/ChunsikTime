@@ -186,6 +186,9 @@ class MainActivity:ComponentActivity(){
                         }
                     }
                     if(!manageSubjects){
+                        if(subjects.isEmpty()){
+                            Text("아직 등록된 학습과목이 없어요. 편집을 눌러 첫 과목을 추가해 주세요.",color=p.muted,fontSize=13.sp)
+                        }
                         subjects.forEach{subject->
                             Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).clickable{lastSubject=subject.id;sendAction(StudyService.ACTION_START,subject.id)}.padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text(subject.name,color=p.text,fontSize=14.sp);Icon(Icons.Default.PlayArrow,null,tint=p.accent)}
                         }
@@ -515,7 +518,7 @@ class MainActivity:ComponentActivity(){
         var minute by remember(initial){mutableIntStateOf(initial%60)}
         var entry by remember{mutableStateOf(false)}
         var typed by remember{mutableStateOf("")}
-        var lastMinute by remember{mutableIntStateOf(minute)}
+        var lastMinute by remember(initial){mutableIntStateOf(initial)}
         val value=if(allowMidnight&&am&&h==12&&minute==0&&initial==1440)1440 else ((h%12)+(if(am)0 else 12))*60+minute
         AlertDialog(onDismissRequest=onDismiss,title={Text("시간 선택",color=p.text)},text={
             Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
@@ -549,7 +552,30 @@ class MainActivity:ComponentActivity(){
 private fun formatMinute(minutes:Int):String="%02d:%02d".format(minutes/60,minutes%60)
 private fun formatClock12(value:Int):String = if(value==1440)"오전 12:00 (익일)" else "%s %02d:%02d".format(if(value/60<12)"오전" else "오후", ((value/60)%12).let{if(it==0)12 else it},value%60)
 
-private fun koreanSolarHoliday(date:LocalDate):String? = when(date.monthValue to date.dayOfMonth){
+/** Local Korean holiday cache for 2026–2027; solar fixed dates are used in other years. */
+private fun koreanSolarHoliday(date:LocalDate):String? {
+    val dated=when(date.year){
+        2026->mapOf(
+            "02-16" to "설 연휴","02-17" to "설날","02-18" to "설 연휴",
+            "03-02" to "삼일절 대체공휴일",
+            "05-01" to "노동절","05-24" to "부처님오신날","05-25" to "대체공휴일",
+            "06-03" to "전국동시지방선거",
+            "08-17" to "광복절 대체공휴일",
+            "09-24" to "추석 연휴","09-25" to "추석","09-26" to "추석 연휴",
+            "10-05" to "개천절 대체공휴일"
+        )
+        2027->mapOf(
+            "02-06" to "설 연휴","02-07" to "설날","02-08" to "설 연휴","02-09" to "설날 대체공휴일",
+            "05-01" to "노동절","05-03" to "노동절 대체공휴일","05-13" to "부처님오신날",
+            "07-17" to "제헌절","07-19" to "제헌절 대체공휴일",
+            "08-16" to "광복절 대체공휴일",
+            "09-14" to "추석 연휴","09-15" to "추석","09-16" to "추석 연휴",
+            "10-04" to "개천절 대체공휴일","10-11" to "한글날 대체공휴일",
+            "12-27" to "성탄절 대체공휴일"
+        )
+        else->emptyMap()
+    }
+    return dated["%02d-%02d".format(date.monthValue,date.dayOfMonth)] ?: when(date.monthValue to date.dayOfMonth){
     1 to 1 -> "신정"
     3 to 1 -> "삼일절"
     5 to 5 -> "어린이날"
@@ -559,4 +585,5 @@ private fun koreanSolarHoliday(date:LocalDate):String? = when(date.monthValue to
     10 to 9 -> "한글날"
     12 to 25 -> "성탄절"
     else -> null
+    }
 }
