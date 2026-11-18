@@ -317,9 +317,7 @@ class MainActivity:ComponentActivity(){
                     detectHorizontalDragGestures(onDragEnd={
                         if(kotlin.math.abs(gestureDistance)>55f) {
                             if(expanded) {
-                                selected=selected.plusWeeks(if(gestureDistance<0)-1L else 1L)
-                                // Swipe left moves forward; swipe right moves backward.
-                                selected=selected.plusWeeks(if(gestureDistance<0)2L else -2L)
+                                selected=selected.plusWeeks(if(gestureDistance<0)1L else -1L)
                                 month=selected.withDayOfMonth(1)
                             }else{
                                 month=month.plusMonths(if(gestureDistance<0)1 else -1)
@@ -526,7 +524,7 @@ class MainActivity:ComponentActivity(){
                     WheelColumn(listOf("오전","오후"),if(am)0 else 1,p,Modifier.weight(1.2f)){am=it==0}
                     WheelColumn((1..12).map{"%02d".format(it)},h-1,p,Modifier.weight(1f)){h=it+1}
                     Column(Modifier.weight(1f)){
-                        WheelColumn((0..5).map{"%02d".format(it*10)},minute/10,p,Modifier.fillMaxWidth()){minute=it*10}
+                        WheelColumn((0..5).map{"%02d".format(it*10)},minute/10,p,Modifier.fillMaxWidth(),onTap={typed="%02d".format(minute);entry=true}){minute=it*10}
                         TextButton(onClick={typed="%02d".format(minute);entry=true},modifier=Modifier.fillMaxWidth()){Text("분 직접 입력",fontSize=10.sp,color=p.accent)}
                     }
                 }
@@ -538,11 +536,11 @@ class MainActivity:ComponentActivity(){
             }
         },confirmButton={TextButton(onClick={onConfirm(if(allowMidnight&&lastMinute==1440&&am&&h==12&&minute==0)1440 else ((h%12)+(if(am)0 else 12))*60+minute)}){Text("확인",color=p.accent)}},dismissButton={TextButton(onClick=onDismiss){Text("취소",color=p.muted)}} ,containerColor=p.card)
     }
-    @Composable private fun WheelColumn(options:List<String>,selected:Int,p:Palette,modifier:Modifier=Modifier,onSelect:(Int)->Unit){
+    @Composable private fun WheelColumn(options:List<String>,selected:Int,p:Palette,modifier:Modifier=Modifier,onTap:(()->Unit)?=null,onSelect:(Int)->Unit){
         var drag by remember{mutableFloatStateOf(0f)}
         Column(modifier.pointerInput(selected,options.size){detectVerticalDragGestures(onDragEnd={if(kotlin.math.abs(drag)>12f){onSelect((selected+(if(drag<0)1 else -1)+options.size)%options.size)};drag=0f}){change,amount->change.consume();drag+=amount}},horizontalAlignment=Alignment.CenterHorizontally){
             IconButton(onClick={onSelect((selected-1+options.size)%options.size)}){Icon(Icons.Default.KeyboardArrowUp,null,tint=p.muted)}
-            Text(options[selected],fontWeight=FontWeight.Bold,color=p.text,fontSize=17.sp,modifier=Modifier.clip(RoundedCornerShape(9.dp)).background(p.bg).clickable{onSelect((selected+1)%options.size)}.padding(horizontal=12.dp,vertical=15.dp))
+            Text(options[selected],fontWeight=FontWeight.Bold,color=p.text,fontSize=17.sp,modifier=Modifier.clip(RoundedCornerShape(9.dp)).background(p.bg).clickable{if(onTap!=null)onTap() else onSelect((selected+1)%options.size)}.padding(horizontal=12.dp,vertical=15.dp))
             IconButton(onClick={onSelect((selected+1)%options.size)}){Icon(Icons.Default.KeyboardArrowDown,null,tint=p.muted)}
         }
     }

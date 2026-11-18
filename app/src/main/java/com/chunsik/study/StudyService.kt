@@ -87,6 +87,9 @@ class StudyService: Service() {
         val subjectName=store.subjects().firstOrNull{it.id==prefs.getLong("subject",-1)}?.name?:"공부"
         val n=Notification.Builder(this,"study_timer")
             .setSmallIcon(android.R.drawable.ic_media_play).setColor(android.graphics.Color.rgb(113,139,122)).setContentTitle("또바기 · $subjectName")
+            .setWhen(System.currentTimeMillis()-1000L*(prefs.getLong("sessionSeconds",0)+
+                if(prefs.getBoolean("running",false))((System.currentTimeMillis()-prefs.getLong("spanStart",System.currentTimeMillis()))/1000).coerceAtLeast(0) else 0L))
+            .setUsesChronometer(prefs.getBoolean("running",false))
             .setContentText(if(prefs.getBoolean("running",false))"공부 중 · 일시정지 또는 종료" else "일시정지 중 · 이어하기 또는 종료")
             .setContentIntent(launch).addAction(Notification.Action.Builder(android.R.drawable.ic_media_pause,if(prefs.getBoolean("running",false))"일시정지" else "이어하기",pause).build())
             .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,"공부 종료",
