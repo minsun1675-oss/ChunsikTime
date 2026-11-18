@@ -254,7 +254,7 @@ class MainActivity:ComponentActivity(){
             item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){IconButton(onClick={date=date.minusWeeks(1)}){Icon(Icons.Default.ChevronLeft,null,tint=p.text)};Text("${week.monthValue}.${week.dayOfMonth} ~ ${week.plusDays(6).monthValue}.${week.plusDays(6).dayOfMonth}",color=p.text);IconButton(onClick={date=date.plusWeeks(1)}){Icon(Icons.Default.ChevronRight,null,tint=p.text)}}
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){(0..6).forEach{i->val d=week.plusDays(i.toLong());Column(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if(date==d)p.accent else p.bg).clickable{date=d;editing=false}.padding(vertical=8.dp),horizontalAlignment=Alignment.CenterHorizontally){Text(listOf("월","화","수","목","금","토","일")[i],color=if(date==d)p.onAccent else p.text,fontSize=12.sp);Text("${d.dayOfMonth}",color=if(date==d)p.onAccent else p.muted,fontSize=11.sp)} }}
             }}
-            item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("${date.monthValue}월 ${date.dayOfMonth}일 계획",color=p.muted,fontSize=12.sp);Text(if(store.isRest(date))"휴식일" else "${current.sumOf{it.endMinute-it.startMinute}/60.0}시간 목표",color=p.text,fontSize=18.sp,fontWeight=FontWeight.SemiBold)};PrimaryButton(p,"+ 추가"){editing=!editing;error=""}}
+            item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("${date.monthValue}월 ${date.dayOfMonth}일 계획",color=p.muted,fontSize=12.sp);Text(if(store.isRest(date))"휴식일" else formatDurationGoal(current.sumOf{it.endMinute-it.startMinute}),color=p.text,fontSize=18.sp,fontWeight=FontWeight.SemiBold)};PrimaryButton(p,"+ 추가"){editing=!editing;error=""}}
                 if(store.isRest(date))Text("휴식일에는 계획과 목표가 적용되지 않아.",color=p.muted,fontSize=12.sp)
                 else if(current.isEmpty())Text("등록된 공부 계획이 없어.",color=p.muted)
                 else current.forEach{plan->Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).padding(10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text(plan.subject,color=p.text);Text("${formatMinute(plan.startMinute)} ~ ${formatMinute(plan.endMinute)}",color=p.muted,fontSize=12.sp)};IconButton(onClick={store.deletePlan(plan.id);refreshKey++;ReminderScheduler.schedule(this@MainActivity)}){Icon(Icons.Default.Delete,null,tint=p.muted)}}}
@@ -520,7 +520,11 @@ class MainActivity:ComponentActivity(){
         var typed by remember{mutableStateOf("")}
         var lastMinute by remember(initial){mutableIntStateOf(initial)}
         val value=if(allowMidnight&&am&&h==12&&minute==0&&initial==1440)1440 else ((h%12)+(if(am)0 else 12))*60+minute
-        AlertDialog(onDismissRequest=onDismiss,title={Text("시간 선택",color=p.text)},text={
+        if(entry){
+            AlertDialog(onDismissRequest={entry=false},title={Text("분 직접 입력",color=p.text)},text={
+                OutlinedTextField(value=typed,onValueChange={if(it.length<=2&&it.all(Char::isDigit))typed=it},label={Text("분 (00~59)")},keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Number),singleLine=true,modifier=Modifier.fillMaxWidth())
+            },confirmButton={TextButton(onClick={typed.toIntOrNull()?.let{if(it in 0..59){minute=it;entry=false}}},enabled=typed.toIntOrNull()?.let{it in 0..59}==true){Text("적용",color=p.accent)}},dismissButton={TextButton(onClick={entry=false}){Text("취소",color=p.muted)}},containerColor=p.card)
+        }else AlertDialog(onDismissRequest=onDismiss,title={Text("시간 선택",color=p.text)},text={
             Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
                 Text(formatClock12(value),fontSize=22.sp,color=p.text,fontWeight=FontWeight.Bold,modifier=Modifier.align(Alignment.CenterHorizontally))
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
@@ -532,10 +536,6 @@ class MainActivity:ComponentActivity(){
                     }
                 }
                 if(allowMidnight)TextButton(onClick={am=true;h=12;minute=0;lastMinute=1440},modifier=Modifier.fillMaxWidth()){Text("하루 종료 24:00",color=p.accent)}
-                if(entry) {
-                    OutlinedTextField(value=typed,onValueChange={if(it.length<=2&&it.all(Char::isDigit))typed=it},label={Text("분 (00~59)")},keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Number),singleLine=true)
-                    TextButton(onClick={typed.toIntOrNull()?.let{if(it in 0..59){minute=it;entry=false}}}){Text("입력 적용")}
-                }
             }
         },confirmButton={TextButton(onClick={onConfirm(if(allowMidnight&&lastMinute==1440&&am&&h==12&&minute==0)1440 else ((h%12)+(if(am)0 else 12))*60+minute)}){Text("확인",color=p.accent)}},dismissButton={TextButton(onClick=onDismiss){Text("취소",color=p.muted)}} ,containerColor=p.card)
     }
@@ -586,4 +586,11 @@ private fun koreanSolarHoliday(date:LocalDate):String? {
     12 to 25 -> "성탄절"
     else -> null
     }
+}
+
+private fun formatDurationGoal(totalMinutes:Int):String = when {
+    totalMinutes<=0 -> "0분 목표"
+    totalMinutes<60 -> "${totalMinutes}분 목표"
+    totalMinutes%60==0 -> "${totalMinutes/60}시간 목표"
+    else -> "${totalMinutes/60}시간 ${totalMinutes%60}분 목표"
 }
