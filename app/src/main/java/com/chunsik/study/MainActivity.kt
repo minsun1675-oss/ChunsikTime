@@ -440,6 +440,9 @@ class MainActivity:ComponentActivity(){
     @Composable private fun SettingsPage(p:Palette,subjects:List<Subject>,records:List<StudyRecord>,theme:Int,onTheme:(Int)->Unit){
         var subsection by remember {mutableStateOf("")};var input by remember{mutableStateOf("")};var note by remember{mutableStateOf("")};var chosenId by remember{mutableLongStateOf(subjects.firstOrNull()?.id?:-1L)}
         var focus by remember{mutableStateOf(appPrefs.getBoolean("focus",true))};var floating by remember{mutableStateOf(appPrefs.getBoolean("floating",true))}
+        var morningEnabled by remember{mutableStateOf(appPrefs.getBoolean("morning_enabled",true))}
+        var morningTime by remember{mutableStateOf(appPrefs.getString("morning_time","08:00")?:"08:00")}
+        var planAlertEnabled by remember{mutableStateOf(appPrefs.getBoolean("plan_reminders",true))}
         val export=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")){uri->if(uri!=null)runCatching{contentResolver.openOutputStream(uri)?.bufferedWriter()?.use{it.write(store.snapshot())}}.onSuccess{note="백업 파일을 내보냈어."}.onFailure{note="내보내기 실패: ${it.message}"}}
         val import=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->if(uri!=null)runCatching{val str=contentResolver.openInputStream(uri)?.bufferedReader()?.use{it.readText()}?:error("파일 읽기 실패");store.restore(str);refreshKey++}.onSuccess{note="복원 완료"}.onFailure{note="복원 실패: ${it.message}"}}
         LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
@@ -457,26 +460,23 @@ class MainActivity:ComponentActivity(){
             }else if(subsection=="플로팅 타이머"){
                 item {Card(p){Row(verticalAlignment=Alignment.CenterVertically){Checkbox(floating,onCheckedChange={floating=it;appPrefs.edit().putBoolean("floating",it).apply()});Text("팝업 타이머 사용",color=p.text)};PrimaryButton(p,"화면 위에 표시 권한"){startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")))}}}
             }else if(subsection=="응원 알림"){
-                var enabled by remember{mutableStateOf(appPrefs.getBoolean("morning_enabled",true))}
-                var morning by remember{mutableStateOf(appPrefs.getString("morning_time","08:00")?:"08:00")}
                 item {Card(p){
                     Row(verticalAlignment=Alignment.CenterVertically){
-                        Checkbox(enabled,onCheckedChange={enabled=it;appPrefs.edit().putBoolean("morning_enabled",it).apply();ReminderScheduler.schedule(this@MainActivity)})
+                        Checkbox(morningEnabled,onCheckedChange={morningEnabled=it;appPrefs.edit().putBoolean("morning_enabled",it).apply();ReminderScheduler.schedule(this@MainActivity)})
                         Text("매일 아침 응원 알림",color=p.text)
                     }
-                    TextField(value=morning,onValueChange={morning=it},label={Text("알림 시간 (HH:MM)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
-                    PrimaryButton(p,"시간 저장",runCatching{LocalTime.parse(morning)}.isSuccess){
-                        appPrefs.edit().putString("morning_time",morning).apply()
+                    TextField(value=morningTime,onValueChange={morningTime=it},label={Text("알림 시간 (HH:MM)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                    PrimaryButton(p,"시간 저장",runCatching{LocalTime.parse(morningTime)}.isSuccess){
+                        appPrefs.edit().putString("morning_time",morningTime).apply()
                         ReminderScheduler.schedule(this@MainActivity)
                         note="아침 알림 시간을 저장했어."
                     }
                     Text("주말 포함 매일 1회 · 기본 문구와 사용자 문구에서 랜덤 선택",color=p.muted,fontSize=12.sp)
                 }}
             }else if(subsection=="공부 시작 알림"){
-                var enabled by remember{mutableStateOf(appPrefs.getBoolean("plan_reminders",true))}
                 item {Card(p){
                     Row(verticalAlignment=Alignment.CenterVertically){
-                        Checkbox(enabled,onCheckedChange={enabled=it;appPrefs.edit().putBoolean("plan_reminders",it).apply();ReminderScheduler.schedule(this@MainActivity)})
+                        Checkbox(planAlertEnabled,onCheckedChange={planAlertEnabled=it;appPrefs.edit().putBoolean("plan_reminders",it).apply();ReminderScheduler.schedule(this@MainActivity)})
                         Text("공부 계획 10분 전 알림",color=p.text)
                     }
                     Text("시간표의 시작 10분 전에 안내해요. 이미 해당 과목을 공부 중이라면 생략합니다. 휴대폰 배터리 설정에 따라 알림 시각이 늦어질 수 있습니다.",color=p.muted,fontSize=12.sp)
