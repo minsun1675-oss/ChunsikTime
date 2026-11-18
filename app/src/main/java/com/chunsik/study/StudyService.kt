@@ -86,9 +86,12 @@ class StudyService: Service() {
         val pause=PendingIntent.getService(this,1,Intent(this,StudyService::class.java).setAction(if(prefs.getBoolean("running",false))ACTION_PAUSE else ACTION_RESUME),PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val subjectName=store.subjects().firstOrNull{it.id==prefs.getLong("subject",-1)}?.name?:"공부"
         val n=Notification.Builder(this,"study_timer")
-            .setSmallIcon(android.R.drawable.ic_media_play).setContentTitle("$subjectName · ${if(prefs.getBoolean("running",false))"공부 중" else "일시정지"}")
-            .setContentText("학습 타이머 작동 중 · 눌러서 앱 열기")
+            .setSmallIcon(android.R.drawable.ic_media_play).setColor(android.graphics.Color.rgb(113,139,122)).setContentTitle("또바기 · $subjectName")
+            .setContentText(if(prefs.getBoolean("running",false))"공부 중 · 일시정지 또는 종료" else "일시정지 중 · 이어하기 또는 종료")
             .setContentIntent(launch).addAction(Notification.Action.Builder(android.R.drawable.ic_media_pause,if(prefs.getBoolean("running",false))"일시정지" else "이어하기",pause).build())
+            .addAction(Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,"공부 종료",
+                PendingIntent.getService(this,2,Intent(this,StudyService::class.java).setAction(ACTION_END),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)).build())
             .setOngoing(true).build()
         if(Build.VERSION.SDK_INT>=34)startForeground(5001,n,android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(5001,n)

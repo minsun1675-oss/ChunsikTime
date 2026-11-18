@@ -73,6 +73,7 @@ class MainActivity:ComponentActivity(){
             permissionLauncher=registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
             permissionLauncher?.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        ReminderScheduler.schedule(this)
         val filter=IntentFilter("com.chunsik.study.REFRESH")
         if(Build.VERSION.SDK_INT>=33) registerReceiver(receiver,filter,RECEIVER_NOT_EXPORTED) else registerReceiver(receiver,filter)
         setContent { StudyApp() }
@@ -94,7 +95,7 @@ class MainActivity:ComponentActivity(){
     }
     override fun onDestroy(){try{unregisterReceiver(receiver)}catch(_:Exception){};super.onDestroy()}
     override fun onStop(){super.onStop();if(!isChangingConfigurations && (timerPrefs.getBoolean("running",false)||timerPrefs.getBoolean("paused",false))) sendAction(StudyService.ACTION_OVERLAY)}
-    override fun onStart(){super.onStart();sendAction(StudyService.ACTION_HIDE)}
+    override fun onStart(){super.onStart();sendAction(StudyService.ACTION_HIDE);ReminderScheduler.schedule(this)}
     private fun sendAction(action:String,subject:Long=-1) {val intent=Intent(this,StudyService::class.java).setAction(action).putExtra("subject",subject)
         try{if(action==StudyService.ACTION_START)startForegroundService(intent) else if(StudyService.alive) startService(intent)}catch(_:Exception){}
         refreshKey++
@@ -102,7 +103,7 @@ class MainActivity:ComponentActivity(){
     @Composable private fun StudyApp(){
         var theme by remember { mutableIntStateOf(appPrefs.getInt("theme",0)) }
         val pal=palettes[theme.coerceIn(0,4)]
-        val selectedQuote=remember{words.random()}
+        val selectedQuote=remember{QuoteStore.all(this@MainActivity).random()}
         var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
         LaunchedEffect(Unit){while(true){tick=System.currentTimeMillis();delay(1000)}}
         val force=refreshKey // snapshot invalidation after writes
@@ -253,7 +254,7 @@ class MainActivity:ComponentActivity(){
             item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("${date.monthValue}월 ${date.dayOfMonth}일 계획",color=p.muted,fontSize=12.sp);Text(if(store.isRest(date))"휴식일" else "${current.sumOf{it.endMinute-it.startMinute}/60.0}시간 목표",color=p.text,fontSize=18.sp,fontWeight=FontWeight.SemiBold)};PrimaryButton(p,"+ 추가"){editing=!editing;error=""}}
                 if(store.isRest(date))Text("휴식일에는 계획과 목표가 적용되지 않아.",color=p.muted,fontSize=12.sp)
                 else if(current.isEmpty())Text("등록된 공부 계획이 없어.",color=p.muted)
-                else current.forEach{plan->Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).padding(10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text(plan.subject,color=p.text);Text("${formatMinute(plan.startMinute)} ~ ${formatMinute(plan.endMinute)}",color=p.muted,fontSize=12.sp)};IconButton(onClick={store.deletePlan(plan.id);refreshKey++}){Icon(Icons.Default.Delete,null,tint=p.muted)}}}
+                else current.forEach{plan->Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(p.bg).padding(10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text(plan.subject,color=p.text);Text("${formatMinute(plan.startMinute)} ~ ${formatMinute(plan.endMinute)}",color=p.muted,fontSize=12.sp)};IconButton(onClick={store.deletePlan(plan.id);refreshKey++;ReminderScheduler.schedule(this@MainActivity)}){Icon(Icons.Default.Delete,null,tint=p.muted)}}}
             }}
             if(editing) item {Card(p){
                 Text("공부 계획 추가",fontWeight=FontWeight.Bold,color=p.text)
@@ -289,7 +290,7 @@ class MainActivity:ComponentActivity(){
                             "once"->store.addPlan(date.dayOfWeek.value,date.toString(),subject,start,end,"replace")
                             else->store.addWeeklyPlans(setOf(date.dayOfWeek.value),subject,start,end)
                         }
-                        if(saved){editing=false;refreshKey++}else error="시간이 겹치거나 범위가 올바르지 않아."
+                        if(saved){editing=false;refreshKey++;ReminderScheduler.schedule(this@MainActivity)}else error="시간이 겹치거나 범위가 올바르지 않아."
                     }}
                 }
             }}
@@ -447,7 +448,7 @@ class MainActivity:ComponentActivity(){
             item {Row(verticalAlignment=Alignment.CenterVertically){if(subsection.isNotBlank())IconButton(onClick={subsection=""}){Icon(Icons.Default.ArrowBack,null,tint=p.text)};Heading(p,if(subsection.isBlank())"환경설정" else subsection,"SETTINGS")}}
             if(subsection.isBlank()){
                 item {Card(p){Text("학습 관리",color=p.muted,fontSize=12.sp);listOf("과목 관리","공부 기록 관리").forEach{SettingsLink(p,it){subsection=it}}}}
-                item {Card(p){Text("사용 환경",color=p.muted,fontSize=12.sp);listOf("테마 설정","집중 모드","플로팅 타이머","응원 문구 관리").forEach{SettingsLink(p,it){subsection=it}}}}
+                item {Card(p){Text("사용 환경",color=p.muted,fontSize=12.sp);listOf("테마 설정","집중 모드","플로팅 타이머","응원 알림","공부 시작 알림","응원 문구 관리").forEach{SettingsLink(p,it){subsection=it}}}}
                 item {Card(p){Text("데이터 관리",color=p.muted,fontSize=12.sp);SettingsLink(p,"백업 및 복원"){subsection="백업 및 복원"}}}
             }else if(subsection=="과목 관리"){
                 item {Card(p){subjects.forEach{s->Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text(s.name,color=p.text);IconButton(onClick={if(!store.deleteSubject(s.id))note="기록이나 계획이 있는 과목은 삭제할 수 없어." else refreshKey++}){Icon(Icons.Default.Delete,null,tint=p.muted)}}};TextField(value=input,onValueChange={input=it},label={Text("새 과목")},modifier=Modifier.fillMaxWidth());PrimaryButton(p,"추가"){store.addSubject(input);input="";refreshKey++}}}
@@ -457,13 +458,50 @@ class MainActivity:ComponentActivity(){
                 item {Card(p){Row(verticalAlignment=Alignment.CenterVertically){Checkbox(focus,onCheckedChange={focus=it;appPrefs.edit().putBoolean("focus",it).apply()});Text("공부 중 방해 금지 자동 실행",color=p.text,fontSize=14.sp)};Text("권한 승인 시 작동해. 공부 종료 시 앱이 켠 상태만 복원해.",color=p.muted,fontSize=12.sp);PrimaryButton(p,"방해 금지 권한 설정"){startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))}}}
             }else if(subsection=="플로팅 타이머"){
                 item {Card(p){Row(verticalAlignment=Alignment.CenterVertically){Checkbox(floating,onCheckedChange={floating=it;appPrefs.edit().putBoolean("floating",it).apply()});Text("팝업 타이머 사용",color=p.text)};PrimaryButton(p,"화면 위에 표시 권한"){startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")))}}}
+            }else if(subsection=="응원 알림"){
+                var enabled by remember{mutableStateOf(appPrefs.getBoolean("morning_enabled",true))}
+                var morning by remember{mutableStateOf(appPrefs.getString("morning_time","08:00")?:"08:00")}
+                item {Card(p){
+                    Row(verticalAlignment=Alignment.CenterVertically){
+                        Checkbox(enabled,onCheckedChange={enabled=it;appPrefs.edit().putBoolean("morning_enabled",it).apply();ReminderScheduler.schedule(this@MainActivity)})
+                        Text("매일 아침 응원 알림",color=p.text)
+                    }
+                    TextField(value=morning,onValueChange={morning=it},label={Text("알림 시간 (HH:MM)")},modifier=Modifier.fillMaxWidth(),singleLine=true)
+                    PrimaryButton(p,"시간 저장",runCatching{LocalTime.parse(morning)}.isSuccess){
+                        appPrefs.edit().putString("morning_time",morning).apply()
+                        ReminderScheduler.schedule(this@MainActivity)
+                        note="아침 알림 시간을 저장했어."
+                    }
+                    Text("주말 포함 매일 1회 · 기본 문구와 사용자 문구에서 랜덤 선택",color=p.muted,fontSize=12.sp)
+                }}
+            }else if(subsection=="공부 시작 알림"){
+                var enabled by remember{mutableStateOf(appPrefs.getBoolean("plan_reminders",true))}
+                item {Card(p){
+                    Row(verticalAlignment=Alignment.CenterVertically){
+                        Checkbox(enabled,onCheckedChange={enabled=it;appPrefs.edit().putBoolean("plan_reminders",it).apply();ReminderScheduler.schedule(this@MainActivity)})
+                        Text("공부 계획 10분 전 알림",color=p.text)
+                    }
+                    Text("시간표의 시작 10분 전에 안내해요. 이미 해당 과목을 공부 중이라면 생략합니다. 휴대폰 배터리 설정에 따라 알림 시각이 늦어질 수 있습니다.",color=p.muted,fontSize=12.sp)
+                }}
             }else if(subsection=="백업 및 복원"){
                 item {Card(p){Text("자동 백업: 매달 첫 앱 실행 시",color=p.text);Text("6개월 지난 자동 백업만 삭제 · 원본 기록 영구 보관",color=p.muted,fontSize=12.sp);PrimaryButton(p,"백업 파일 내보내기"){export.launch("chunsik-study-${LocalDate.now()}.json")};OutlinedButton(onClick={import.launch(arrayOf("application/json","text/plain"))}){Text("백업 파일 가져오기")};Text("내부 자동 백업: ${Backups(this@MainActivity,store).snapshots().size}개",color=p.muted,fontSize=12.sp)}}
             }else if(subsection=="공부 기록 관리"){
                 item {Card(p){Text("수동 기록 추가",color=p.text,fontWeight=FontWeight.Bold);SubjectPicker(subjects,chosenId,p){chosenId=it};TextField(value=input,onValueChange={input=it},label={Text("공부 시간 (분)")},keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Number),modifier=Modifier.fillMaxWidth());PrimaryButton(p,"오늘 기록에 추가",input.toLongOrNull()?.let{it>0}==true){val minutes=input.toLongOrNull()?:0;if(minutes>0){val now=System.currentTimeMillis();store.addRecord(chosenId,now-minutes*60000,now,minutes*60);refreshKey++;input=""}}}}
                 items(records.take(30).size){i->val r=records[i];Card(p){Text("${r.subject} · ${formatClock(r.seconds)}",color=p.text,fontSize=13.sp);Row{OutlinedButton(onClick={store.deleteRecord(r.id);refreshKey++}){Text("삭제")};Spacer(Modifier.width(8.dp));OutlinedButton(onClick={store.editRecord(r.id,(r.seconds-60).coerceAtLeast(1));refreshKey++}){Text("1분 줄이기")}}}}
             }else if(subsection=="응원 문구 관리"){
-                item {Card(p){Text("기본 문구 ${words.size}개",color=p.text);Text("사용자 문구 추가 편집은 다음 단계에서 연결 예정",color=p.muted,fontSize=12.sp)}}
+                item {Card(p){
+                    Text("기본 문구 ${QuoteStore.defaults.size}개 · 사용자 문구 ${QuoteStore.custom(this@MainActivity).size}개",color=p.text)
+                    QuoteStore.custom(this@MainActivity).forEach{quote->
+                        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween){
+                            Text(quote,color=p.text,modifier=Modifier.weight(1f))
+                            IconButton(onClick={QuoteStore.remove(this@MainActivity,quote);refreshKey++}){Icon(Icons.Default.Delete,null,tint=p.muted)}
+                        }
+                    }
+                    TextField(value=input,onValueChange={input=it},label={Text("응원 문구 직접 추가")},modifier=Modifier.fillMaxWidth())
+                    PrimaryButton(p,"문구 추가",input.isNotBlank()){
+                        if(QuoteStore.add(this@MainActivity,input)){input="";refreshKey++;note="문구를 추가했어."}else note="중복이거나 너무 긴 문구야."
+                    }
+                }}
             }
             if(note.isNotBlank())item {Text(note,color=p.muted,fontSize=12.sp)}
         }
