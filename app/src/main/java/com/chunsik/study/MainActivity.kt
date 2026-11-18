@@ -542,9 +542,9 @@ class MainActivity:ComponentActivity(){
     @Composable private fun WheelColumn(options:List<String>,selected:Int,p:Palette,modifier:Modifier=Modifier,onTap:(()->Unit)?=null,onSelect:(Int)->Unit){
         var drag by remember{mutableFloatStateOf(0f)}
         Column(modifier.pointerInput(selected,options.size){detectVerticalDragGestures(onDragEnd={if(kotlin.math.abs(drag)>12f){onSelect((selected+(if(drag<0)1 else -1)+options.size)%options.size)};drag=0f}){change,amount->change.consume();drag+=amount}},horizontalAlignment=Alignment.CenterHorizontally){
-            IconButton(onClick={onSelect((selected-1+options.size)%options.size)}){Icon(Icons.Default.KeyboardArrowUp,null,tint=p.muted)}
+            IconButton(onClick={onSelect((selected+1)%options.size)}){Icon(Icons.Default.KeyboardArrowUp,null,tint=p.muted)}
             Text(options[selected],fontWeight=FontWeight.Bold,color=p.text,fontSize=17.sp,modifier=Modifier.clip(RoundedCornerShape(9.dp)).background(p.bg).clickable{if(onTap!=null)onTap() else onSelect((selected+1)%options.size)}.padding(horizontal=12.dp,vertical=15.dp))
-            IconButton(onClick={onSelect((selected+1)%options.size)}){Icon(Icons.Default.KeyboardArrowDown,null,tint=p.muted)}
+            IconButton(onClick={onSelect((selected-1+options.size)%options.size)}){Icon(Icons.Default.KeyboardArrowDown,null,tint=p.muted)}
         }
     }
     @Composable private fun ChoicePicker(options:List<Pair<String,String>>,chosen:String,p:Palette,modifier:Modifier=Modifier,onChange:(String)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(options.firstOrNull{it.second==chosen}?.first?:"선택",color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){options.forEach{(label,value)->DropdownMenuItem(text={Text(label)},onClick={onChange(value);expanded=false})}}}}
