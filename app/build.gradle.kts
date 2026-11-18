@@ -13,7 +13,26 @@ android {
         versionCode = 3
         versionName = "0.3.0"
     }
-    buildTypes { release { isMinifyEnabled = false } }
+    // Stable signing is enabled only when GitHub Actions provides private Secrets.
+    val signingPath = System.getenv("TTB_KEYSTORE_PATH")
+    if (!signingPath.isNullOrBlank()) {
+        signingConfigs {
+            create("ttobagiRelease") {
+                storeFile = file(signingPath)
+                storePassword = System.getenv("TTB_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("TTB_KEY_ALIAS") ?: "ttobagi"
+                keyPassword = System.getenv("TTB_KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            if (!signingPath.isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("ttobagiRelease")
+            }
+        }
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }

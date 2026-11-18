@@ -7,6 +7,8 @@ permissions:
   contents: read
 jobs:
   build:
+    env:
+      TTB_SIGNING_ENABLED: ${{ secrets.TTB_KEYSTORE_BASE64 != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -33,4 +35,23 @@ jobs:
         with:
           name: ChunsikTime-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Assemble signed release APK (when signing Secrets are configured)
+        if: ${{ env.TTB_SIGNING_ENABLED == 'true' }}
+        env:
+          TTB_KEYSTORE_BASE64: ${{ secrets.TTB_KEYSTORE_BASE64 }}
+          TTB_KEYSTORE_PASSWORD: ${{ secrets.TTB_KEYSTORE_PASSWORD }}
+          TTB_KEY_ALIAS: ${{ secrets.TTB_KEY_ALIAS }}
+          TTB_KEY_PASSWORD: ${{ secrets.TTB_KEY_PASSWORD }}
+        run: |
+          printf '%s' "$TTB_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/ttobagi.jks"
+          export TTB_KEYSTORE_PATH="$RUNNER_TEMP/ttobagi.jks"
+          gradle --no-daemon assembleRelease
+      - name: Upload signed release APK
+        if: ${{ env.TTB_SIGNING_ENABLED == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: TTOBAGI-signed-release-apk
+          path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
