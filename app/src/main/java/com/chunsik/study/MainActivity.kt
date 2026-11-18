@@ -13,6 +13,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
@@ -307,22 +309,70 @@ class MainActivity:ComponentActivity(){
         LazyColumn(contentPadding=PaddingValues(13.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
             item {Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Heading(p,"학습 캘린더","CALENDAR");TextButton(onClick={selected=LocalDate.now();month=selected.withDayOfMonth(1);expanded=true}){Text("오늘",color=p.accent)}}}
             if(exam!=null) item {Card(p){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Column{Text("다가오는 시험",fontSize=11.sp,color=p.muted);Text(exam.name,color=p.text,fontWeight=FontWeight.SemiBold)};Text("D-${ChronoUnit.DAYS.between(LocalDate.now(),LocalDate.parse(exam.date))}",color=p.accent,fontWeight=FontWeight.Bold,fontSize=19.sp)}}}
-            item {Card(p){
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){IconButton(onClick={month=month.minusMonths(1)}){Icon(Icons.Default.ChevronLeft,null,tint=p.text)};Text("${month.year}년 ${month.monthValue}월",fontWeight=FontWeight.SemiBold,color=p.text);IconButton(onClick={month=month.plusMonths(1)}){Icon(Icons.Default.ChevronRight,null,tint=p.text)}}
-                Row(Modifier.fillMaxWidth()){listOf("일","월","화","수","목","금","토").forEach{Text(it,color=p.muted,fontSize=12.sp,modifier=Modifier.weight(1f),textAlign=TextAlign.Center)}}
-                // Collapses into the selected week, preserving the selected date.
-                val first=if(expanded) ((selected.dayOfMonth+pad-1)/7)*7 else 0
-                val rowCount=if(expanded) 1 else (pad+days+6)/7
-                repeat(rowCount){r->Row(Modifier.fillMaxWidth()){
-                    repeat(7){c->val d=first+r*7+c-pad+1
-                        Box(Modifier.weight(1f).height(if(expanded)52.dp else 54.dp).padding(2.dp)){
-                            if(d in 1..days){val dd=month.withDayOfMonth(d);val rest=store.isRest(dd);val hasExam=store.eventsFor(dd).any{it.type=="exam"};Column(Modifier.fillMaxSize().clip(RoundedCornerShape(7.dp)).background(if(dd==selected)p.accent else p.bg).clickable{selected=dd;expanded=true;form=false}.padding(2.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center){Text("$d",color=if(dd==selected)p.onAccent else p.text,fontSize=12.sp);if(rest)Text("휴식",fontSize=9.sp,color=if(dd==selected)p.onAccent else p.accent)else if(hasExam)Text("●",color=Color(0xFFC7A371),fontSize=9.sp)} }
+
+            item {
+                var gestureDistance by remember{mutableFloatStateOf(0f)}
+                Box(Modifier.pointerInput(month,selected,expanded){
+                    detectHorizontalDragGestures(onDragEnd={
+                        if(kotlin.math.abs(gestureDistance)>55f) {
+                            if(expanded) {
+                                selected=selected.plusWeeks(if(gestureDistance<0)-1L else 1L)
+                                // Swipe left moves forward; swipe right moves backward.
+                                selected=selected.plusWeeks(if(gestureDistance<0)2L else -2L)
+                                month=selected.withDayOfMonth(1)
+                            }else{
+                                month=month.plusMonths(if(gestureDistance<0)1 else -1)
+                            }
+                        }
+                        gestureDistance=0f
+                    }){change,amount->change.consume();gestureDistance+=amount}
+                }){
+                    Column(Modifier.fillMaxWidth().animateContentSize(animationSpec=tween(280))){
+                        Card(p){
+                            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
+                                IconButton(onClick={
+                                    if(expanded){selected=selected.minusWeeks(1);month=selected.withDayOfMonth(1)}
+                                    else month=month.minusMonths(1)
+                                }){Icon(Icons.Default.ChevronLeft,null,tint=p.text)}
+                                Text(if(expanded)"${selected.monthValue}월 ${selected.dayOfMonth}일 주간" else "${month.year}년 ${month.monthValue}월",fontWeight=FontWeight.SemiBold,color=p.text)
+                                IconButton(onClick={
+                                    if(expanded){selected=selected.plusWeeks(1);month=selected.withDayOfMonth(1)}
+                                    else month=month.plusMonths(1)
+                                }){Icon(Icons.Default.ChevronRight,null,tint=p.text)}
+                            }
+                            Row(Modifier.fillMaxWidth()){listOf("일","월","화","수","목","금","토").forEachIndexed{i,day->
+                                Text(day,color=if(i==0)Color(0xFFBE6262) else if(i==6)Color(0xFF6388B0) else p.muted,fontSize=12.sp,modifier=Modifier.weight(1f),textAlign=TextAlign.Center)
+                            }}
+                            val weekStart=selected.minusDays((selected.dayOfWeek.value%7).toLong())
+                            val gridDays=if(expanded)7 else ((pad+days+6)/7)*7
+                            repeat(gridDays/7){row->
+                                Row(Modifier.fillMaxWidth()){
+                                    repeat(7){col->
+                                        val dd=if(expanded)weekStart.plusDays(col.toLong()) else month.plusDays((row*7+col-pad).toLong())
+                                        val valid=expanded || dd.month==month.month
+                                        val holiday=koreanSolarHoliday(dd)
+                                        val eventsOn=if(valid)store.eventsFor(dd) else emptyList()
+                                        val label=holiday?:eventsOn.firstOrNull()?.let{if(it.type=="rest")"휴식" else it.name}
+                                        val tone=if(holiday!=null||col==0)Color(0xFFBE6262) else if(col==6)Color(0xFF6388B0) else p.text
+                                        Box(Modifier.weight(1f).height(if(expanded)70.dp else 77.dp).padding(2.dp)){
+                                            if(valid){
+                                                Column(Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)).background(if(dd==selected)p.accent else p.bg).clickable{selected=dd;month=dd.withDayOfMonth(1);expanded=true;form=false}.padding(4.dp),verticalArrangement=Arrangement.spacedBy(3.dp)){
+                                                    Text("${dd.dayOfMonth}",color=if(dd==selected)p.onAccent else tone,fontSize=12.sp,fontWeight=FontWeight.SemiBold)
+                                                    if(label!=null){
+                                                        Text(label,fontSize=9.sp,maxLines=2,overflow=androidx.compose.ui.text.style.TextOverflow.Ellipsis,color=if(dd==selected)p.onAccent else if(holiday!=null)Color(0xFFBE6262) else p.accent)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if(expanded){TextButton(onClick={expanded=false;form=false}){Text("⌄ 상세 닫기",color=p.muted)}}
                         }
                     }
-                }}
-                if(expanded){TextButton(onClick={expanded=false}){Text("⌄ 상세 닫기",color=p.muted)}}
-            }}
-            if(expanded) item {Card(p){
+                }
+            }
+            item {AnimatedVisibility(visible=expanded,enter=slideInVertically(animationSpec=tween(300),initialOffsetY={it})+fadeIn(),exit=slideOutVertically(animationSpec=tween(260),targetOffsetY={it})+fadeOut()){Card(p){
                 Column(Modifier.fillMaxWidth().pointerInput(selected){detectHorizontalDragGestures(onDragEnd={if(horizontal>50){selected=selected.minusDays(1)}else if(horizontal< -50){selected=selected.plusDays(1)};month=selected.withDayOfMonth(1);horizontal=0f}){change,drag->change.consume();horizontal+=drag}}.pointerInput(selected){detectVerticalDragGestures(onDragEnd={if(vertical>90)expanded=false;vertical=0f}){change,drag->if(drag>0)vertical+=drag}}){
                     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Column{Text("${selected.monthValue}월 ${selected.dayOfMonth}일",color=p.muted,fontSize=12.sp);Text("선택한 날짜의 일정",fontWeight=FontWeight.SemiBold,color=p.text)};PrimaryButton(p,"+ 추가"){form=!form}}
                     Spacer(Modifier.height(12.dp))
@@ -333,7 +383,7 @@ class MainActivity:ComponentActivity(){
                     val target=store.targetFor(selected)
                     Column(Modifier.fillMaxWidth().background(p.bg,RoundedCornerShape(10.dp)).padding(12.dp)){Text("이날의 공부 기록",color=p.text,fontWeight=FontWeight.SemiBold);Text("총 공부 ${formatClock(studied)}",color=p.muted,fontSize=12.sp);Text(if(store.isRest(selected))"휴식일" else if(target==0L)"목표 없음" else "달성률 ${studied*100/target}%",color=p.muted,fontSize=12.sp)}
                 }
-            }}
+            }}}
             if(expanded&&form) item {Card(p){Text("새 일정 추가",fontWeight=FontWeight.Bold,color=p.text)
                 ChoicePicker(listOf("시험" to "exam","개인공부" to "study","휴식" to "rest"),type,p){type=it}
                 if(type!="rest") TextField(value=name,onValueChange={name=it},label={Text("일정 이름")},modifier=Modifier.fillMaxWidth(),singleLine=true)
@@ -462,3 +512,15 @@ class MainActivity:ComponentActivity(){
 }
 private fun formatMinute(minutes:Int):String="%02d:%02d".format(minutes/60,minutes%60)
 private fun formatClock12(value:Int):String = if(value==1440)"오전 12:00 (익일)" else "%s %02d:%02d".format(if(value/60<12)"오전" else "오후", ((value/60)%12).let{if(it==0)12 else it},value%60)
+
+private fun koreanSolarHoliday(date:LocalDate):String? = when(date.monthValue to date.dayOfMonth){
+    1 to 1 -> "신정"
+    3 to 1 -> "삼일절"
+    5 to 5 -> "어린이날"
+    6 to 6 -> "현충일"
+    8 to 15 -> "광복절"
+    10 to 3 -> "개천절"
+    10 to 9 -> "한글날"
+    12 to 25 -> "성탄절"
+    else -> null
+}
