@@ -54,6 +54,7 @@ class MainActivity:ComponentActivity(){
     private val appPrefs by lazy { getSharedPreferences("app",0) }
     private val timerPrefs by lazy { getSharedPreferences("timer",0) }
     private var selectedScreen by mutableStateOf(0)
+    private var jumpToTodayPlan by mutableStateOf(false)
     private var refreshKey by mutableIntStateOf(0)
     private var permissionLauncher:androidx.activity.result.ActivityResultLauncher<String>?=null
     private val receiver=object:BroadcastReceiver(){override fun onReceive(context:Context?,intent:Intent?){refreshKey++}}
@@ -73,6 +74,21 @@ class MainActivity:ComponentActivity(){
         val filter=IntentFilter("com.chunsik.study.REFRESH")
         if(Build.VERSION.SDK_INT>=33) registerReceiver(receiver,filter,RECEIVER_NOT_EXPORTED) else registerReceiver(receiver,filter)
         setContent { StudyApp() }
+        if(!Settings.canDrawOverlays(this) && !appPrefs.getBoolean("overlay_intro_seen",false)) {
+            showOverlayPermissionIntro()
+        }
+    }
+    private fun showOverlayPermissionIntro() {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("플로팅 타이머 권한")
+            .setMessage("다른 앱을 사용하면서도 공부 시간을 볼 수 있어요. '다른 앱 위에 표시' 권한을 허용해주세요. 나중에 설정해도 일반 타이머는 사용할 수 있어요.")
+            .setPositiveButton("권한 설정하기"){_,_->
+                appPrefs.edit().putBoolean("overlay_intro_seen",true).apply()
+                runCatching{startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,Uri.parse("package:$packageName")))}
+                    .onFailure{startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))}
+            }
+            .setNegativeButton("나중에 설정"){_,_->appPrefs.edit().putBoolean("overlay_intro_seen",true).apply()}
+            .show()
     }
     override fun onDestroy(){try{unregisterReceiver(receiver)}catch(_:Exception){};super.onDestroy()}
     override fun onStop(){super.onStop();if(!isChangingConfigurations && (timerPrefs.getBoolean("running",false)||timerPrefs.getBoolean("paused",false))) sendAction(StudyService.ACTION_OVERLAY)}
@@ -98,13 +114,13 @@ class MainActivity:ComponentActivity(){
         val events=remember(force){store.events()}
         Column(Modifier.fillMaxSize().background(pal.bg).statusBarsPadding()){
             Column(Modifier.fillMaxWidth().background(pal.accent).padding(horizontal=18.dp, vertical=15.dp),horizontalAlignment=Alignment.CenterHorizontally){
-                Text("오늘의 공부",fontSize=12.sp,color=pal.onAccent.copy(alpha=.85f),modifier=Modifier.align(Alignment.Start))
+                Text("또바기",fontSize=12.sp,color=pal.onAccent.copy(alpha=.85f),modifier=Modifier.align(Alignment.Start))
                 Spacer(Modifier.height(8.dp));Text(selectedQuote,fontWeight=FontWeight.SemiBold,fontSize=19.sp,color=pal.onAccent)
             }
             Box(Modifier.weight(1f)){
                 when(selectedScreen){
                     0->TimerPage(pal,subjects,records,tick)
-                    1->SchedulePage(pal,subjects,plans)
+                    1->SchedulePage(pal,subjects,plans,jumpToTodayPlan){jumpToTodayPlan=false}
                     2->CalendarPage(pal,events,records)
                     3->StatsPage(pal,subjects,records)
                     else->SettingsPage(pal,subjects,records,theme,{theme=it;appPrefs.edit().putInt("theme",it).apply()})
@@ -206,7 +222,7 @@ class MainActivity:ComponentActivity(){
                 }
             }}
             item {Card(p){
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("오늘의 목표",fontWeight=FontWeight.SemiBold,color=p.text);Text(if(store.isRest(today))"휴식일" else if(goal==0L)"목표 없음" else "${(count*100/goal)}%",color=p.muted)}
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("오늘의 목표",fontWeight=FontWeight.SemiBold,color=p.text);TextButton(onClick={selectedScreen=1;jumpToTodayPlan=true}){Text("목표 설정",color=p.accent,fontSize=12.sp)}}
                 LinearProgressIndicator(progress={if(goal>0) (count.toFloat()/goal).coerceIn(0f,1f) else 0f},modifier=Modifier.fillMaxWidth().height(8.dp),color=p.accent,trackColor=p.bg,strokeCap=StrokeCap.Round)
                 Text("공부 ${formatClock(count)}  /  목표 ${if(goal==0L)"없음" else formatClock(goal)}",color=p.muted,fontSize=12.sp)
             }}
@@ -215,12 +231,15 @@ class MainActivity:ComponentActivity(){
             }}
         }
     }
-    @Composable private fun SchedulePage(p:Palette,subjects:List<Subject>,plans:List<Plan>){
+    @Composable private fun SchedulePage(p:Palette,subjects:List<Subject>,plans:List<Plan>,openToday:Boolean=false,onOpened:()->Unit={}){
         var date by remember {mutableStateOf(LocalDate.now())}
         var editing by remember {mutableStateOf(false)}
         var subject by remember {mutableLongStateOf(subjects.firstOrNull()?.id?:-1L)}
         var start by remember {mutableIntStateOf(1140)};var end by remember {mutableIntStateOf(1230)}
         var mode by remember {mutableStateOf("weekly")}
+        var weekdays by remember {mutableStateOf(setOf(1,2,3,4,5))}
+        var picker by remember {mutableStateOf("")}
+        LaunchedEffect(openToday){if(openToday){date=LocalDate.now();editing=true;onOpened()}}
         var error by remember {mutableStateOf("")}
         val week=date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
         val current=store.plansFor(date)
@@ -239,16 +258,42 @@ class MainActivity:ComponentActivity(){
                 Text("과목 선택",fontSize=12.sp,color=p.muted)
                 SubjectPicker(subjects,subject,p,Modifier.fillMaxWidth()){subject=it}
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)){
-                    Column(Modifier.weight(1f)){Text("시작",color=p.muted,fontSize=12.sp);MinutePicker(start,(60..1410 step 30).toList(),p,Modifier.fillMaxWidth()){start=it}}
-                    Column(Modifier.weight(1f)){Text("종료",color=p.muted,fontSize=12.sp);MinutePicker(end,(90..1440 step 30).toList(),p,Modifier.fillMaxWidth()){end=it}}
+                    Column(Modifier.weight(1f)){Text("시작",color=p.muted,fontSize=12.sp);OutlinedButton(onClick={picker="start"},modifier=Modifier.fillMaxWidth()){Text(formatClock12(start),color=p.text)}}
+                    Column(Modifier.weight(1f)){Text("종료",color=p.muted,fontSize=12.sp);OutlinedButton(onClick={picker="end"},modifier=Modifier.fillMaxWidth()){Text(formatClock12(end),color=p.text)}}
                 }
                 Text("적용 방식",fontSize=12.sp,color=p.muted)
-                ChoicePicker(listOf("매주 반복" to "weekly","해당 날짜 변경" to "replace","해당 날짜 추가" to "add"),mode,p,Modifier.fillMaxWidth()){mode=it}
+                ChoicePicker(listOf("매주 반복" to "weekly","해당 날짜만" to "once","직접 설정" to "custom"),mode,p,Modifier.fillMaxWidth()){mode=it}
+                if(mode=="custom") {
+                    Text("반복 요일 선택",color=p.text,fontWeight=FontWeight.SemiBold,fontSize=13.sp)
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){
+                        listOf("월","화","수","목","금","토","일").forEachIndexed{index,label->
+                            val d=index+1
+                            Box(Modifier.weight(1f).padding(2.dp).clip(RoundedCornerShape(9.dp)).background(if(d in weekdays)p.accent else p.bg).clickable{weekdays=if(d in weekdays)weekdays-d else weekdays+d}.padding(vertical=12.dp),contentAlignment=Alignment.Center){
+                                Text(label,color=if(d in weekdays)p.onAccent else p.text,fontSize=12.sp)
+                            }
+                        }
+                    }
+                    Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                        OutlinedButton(onClick={weekdays=(1..5).toSet()}){Text("평일",color=p.text)}
+                        OutlinedButton(onClick={weekdays=setOf(6,7)}){Text("주말",color=p.text)}
+                        OutlinedButton(onClick={weekdays=(1..7).toSet()}){Text("매일",color=p.text)}
+                    }
+                }
                 if(error.isNotEmpty())Text(error,color=Color(0xFFAA5544),fontSize=12.sp)
                 Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){
-                    PrimaryButton(p,"계획 저장"){if(store.addPlan(date.dayOfWeek.value,date.toString(),subject,start,end,mode)){editing=false;refreshKey++}else error="시간이 겹치거나 범위가 올바르지 않아."}
+                    PrimaryButton(p,"계획 저장"){if(subject<0){error="먼저 학습과목을 추가해 주세요."}else {
+                        val saved=when(mode){
+                            "custom"->store.addWeeklyPlans(weekdays,subject,start,end)
+                            "once"->store.addPlan(date.dayOfWeek.value,date.toString(),subject,start,end,"replace")
+                            else->store.addWeeklyPlans(setOf(date.dayOfWeek.value),subject,start,end)
+                        }
+                        if(saved){editing=false;refreshKey++}else error="시간이 겹치거나 범위가 올바르지 않아."
+                    }}
                 }
             }}
+            if(picker.isNotBlank()) item {
+                ClockPickerDialog(if(picker=="start")start else end,p,allowMidnight=picker=="end",onDismiss={picker=""},onConfirm={value->if(picker=="start")start=value else end=value;picker=""})
+            }
         }
     }
     @Composable private fun CalendarPage(p:Palette,events:List<CalendarEvent>,records:List<StudyRecord>){
@@ -376,6 +421,44 @@ class MainActivity:ComponentActivity(){
     @Composable private fun SettingsLink(p:Palette,text:String,onClick:()->Unit){Row(Modifier.fillMaxWidth().clickable(onClick=onClick).padding(vertical=11.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text(text,color=p.text,fontSize=14.sp);Icon(Icons.Default.ChevronRight,null,tint=p.muted)}}
     @Composable private fun SubjectPicker(subjects:List<Subject>,chosen:Long,p:Palette,modifier:Modifier=Modifier,onChange:(Long)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(subjects.firstOrNull{it.id==chosen}?.name?:"과목 선택",color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){subjects.forEach{s->DropdownMenuItem(text={Text(s.name)},onClick={onChange(s.id);expanded=false})}}}}
     @Composable private fun MinutePicker(chosen:Int,options:List<Int>,p:Palette,modifier:Modifier=Modifier,onChange:(Int)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(formatMinute(chosen),color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){Box(Modifier.heightIn(max=340.dp).verticalScroll(rememberScrollState())){Column{options.forEach{x->DropdownMenuItem(text={Text(formatMinute(x))},onClick={onChange(x);expanded=false})}}}}}}
+
+    @Composable private fun ClockPickerDialog(initial:Int,p:Palette,allowMidnight:Boolean,onDismiss:()->Unit,onConfirm:(Int)->Unit){
+        var am by remember(initial){mutableStateOf(initial<720 || initial==1440)}
+        // 12-hour clock; 00:xx is 12 AM and 12:xx is 12 PM.
+        var h by remember(initial){mutableIntStateOf(((initial/60)%12).let{if(it==0)12 else it})}
+        var minute by remember(initial){mutableIntStateOf(initial%60)}
+        var entry by remember{mutableStateOf(false)}
+        var typed by remember{mutableStateOf("")}
+        var lastMinute by remember{mutableIntStateOf(minute)}
+        val value=if(allowMidnight&&am&&h==12&&minute==0&&initial==1440)1440 else ((h%12)+(if(am)0 else 12))*60+minute
+        AlertDialog(onDismissRequest=onDismiss,title={Text("시간 선택",color=p.text)},text={
+            Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
+                Text(formatClock12(value),fontSize=22.sp,color=p.text,fontWeight=FontWeight.Bold,modifier=Modifier.align(Alignment.CenterHorizontally))
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                    WheelColumn(listOf("오전","오후"),if(am)0 else 1,p,Modifier.weight(1.2f)){am=it==0}
+                    WheelColumn((1..12).map{"%02d".format(it)},h-1,p,Modifier.weight(1f)){h=it+1}
+                    Column(Modifier.weight(1f)){
+                        WheelColumn((0..5).map{"%02d".format(it*10)},minute/10,p,Modifier.fillMaxWidth()){minute=it*10}
+                        TextButton(onClick={typed="%02d".format(minute);entry=true},modifier=Modifier.fillMaxWidth()){Text("분 직접 입력",fontSize=10.sp,color=p.accent)}
+                    }
+                }
+                if(allowMidnight)TextButton(onClick={am=true;h=12;minute=0;lastMinute=1440},modifier=Modifier.fillMaxWidth()){Text("하루 종료 24:00",color=p.accent)}
+                if(entry) {
+                    OutlinedTextField(value=typed,onValueChange={if(it.length<=2&&it.all(Char::isDigit))typed=it},label={Text("분 (00~59)")},keyboardOptions=KeyboardOptions(keyboardType=androidx.compose.ui.text.input.KeyboardType.Number),singleLine=true)
+                    TextButton(onClick={typed.toIntOrNull()?.let{if(it in 0..59){minute=it;entry=false}}}){Text("입력 적용")}
+                }
+            }
+        },confirmButton={TextButton(onClick={onConfirm(if(allowMidnight&&lastMinute==1440&&am&&h==12&&minute==0)1440 else ((h%12)+(if(am)0 else 12))*60+minute)}){Text("확인",color=p.accent)}},dismissButton={TextButton(onClick=onDismiss){Text("취소",color=p.muted)}} ,containerColor=p.card)
+    }
+    @Composable private fun WheelColumn(options:List<String>,selected:Int,p:Palette,modifier:Modifier=Modifier,onSelect:(Int)->Unit){
+        var drag by remember{mutableFloatStateOf(0f)}
+        Column(modifier.pointerInput(selected,options.size){detectVerticalDragGestures(onDragEnd={if(kotlin.math.abs(drag)>12f){onSelect((selected+(if(drag<0)1 else -1)+options.size)%options.size)};drag=0f}){change,amount->change.consume();drag+=amount}},horizontalAlignment=Alignment.CenterHorizontally){
+            IconButton(onClick={onSelect((selected-1+options.size)%options.size)}){Icon(Icons.Default.KeyboardArrowUp,null,tint=p.muted)}
+            Text(options[selected],fontWeight=FontWeight.Bold,color=p.text,fontSize=17.sp,modifier=Modifier.clip(RoundedCornerShape(9.dp)).background(p.bg).clickable{onSelect((selected+1)%options.size)}.padding(horizontal=12.dp,vertical=15.dp))
+            IconButton(onClick={onSelect((selected+1)%options.size)}){Icon(Icons.Default.KeyboardArrowDown,null,tint=p.muted)}
+        }
+    }
     @Composable private fun ChoicePicker(options:List<Pair<String,String>>,chosen:String,p:Palette,modifier:Modifier=Modifier,onChange:(String)->Unit){var expanded by remember{mutableStateOf(false)};Box(modifier){OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(options.firstOrNull{it.second==chosen}?.first?:"선택",color=p.text)};DropdownMenu(expanded=expanded,onDismissRequest={expanded=false}){options.forEach{(label,value)->DropdownMenuItem(text={Text(label)},onClick={onChange(value);expanded=false})}}}}
 }
 private fun formatMinute(minutes:Int):String="%02d:%02d".format(minutes/60,minutes%60)
+private fun formatClock12(value:Int):String = if(value==1440)"오전 12:00 (익일)" else "%s %02d:%02d".format(if(value/60<12)"오전" else "오후", ((value/60)%12).let{if(it==0)12 else it},value%60)

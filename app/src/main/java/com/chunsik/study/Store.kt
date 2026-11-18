@@ -25,7 +25,6 @@ class Store(context: Context): SQLiteOpenHelper(context, DB_NAME, null, 1) {
         db.execSQL("CREATE TABLE record(id INTEGER PRIMARY KEY AUTOINCREMENT,subject_id INTEGER NOT NULL,start_ms INTEGER NOT NULL,end_ms INTEGER NOT NULL,seconds INTEGER NOT NULL)")
         db.execSQL("CREATE TABLE plan(id INTEGER PRIMARY KEY AUTOINCREMENT,weekday INTEGER NOT NULL,date TEXT NOT NULL DEFAULT '',subject_id INTEGER NOT NULL,start_min INTEGER NOT NULL,end_min INTEGER NOT NULL,mode TEXT NOT NULL DEFAULT 'weekly')")
         db.execSQL("CREATE TABLE event(id INTEGER PRIMARY KEY AUTOINCREMENT,date TEXT NOT NULL,name TEXT NOT NULL,type TEXT NOT NULL,clock TEXT NOT NULL,repeat_rule TEXT NOT NULL DEFAULT 'none')")
-        listOf("소방학개론", "행정법총론", "소방관계법규", "한국사").forEach { db.execSQL("INSERT INTO subject(name) VALUES(?)", arrayOf(it)) }
     }
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
     fun subjects():List<Subject> = readableDatabase.rawQuery("SELECT id,name FROM subject ORDER BY id", null).use { c -> buildList { while(c.moveToNext()) add(Subject(c.getLong(0),c.getString(1))) } }
@@ -39,7 +38,7 @@ class Store(context: Context): SQLiteOpenHelper(context, DB_NAME, null, 1) {
     fun deleteRecord(id:Long) { writableDatabase.delete("record","id=?",arrayOf(id.toString())) }
     fun plans():List<Plan> = readableDatabase.rawQuery("SELECT p.id,p.weekday,p.date,p.subject_id,COALESCE(s.name,'삭제된 과목'),p.start_min,p.end_min,p.mode FROM plan p LEFT JOIN subject s ON s.id=p.subject_id ORDER BY p.start_min",null).use { c -> buildList{while(c.moveToNext())add(Plan(c.getLong(0),c.getInt(1),c.getString(2),c.getLong(3),c.getString(4),c.getInt(5),c.getInt(6),c.getString(7))) } }
     fun addPlan(weekday:Int,date:String,subjectId:Long,start:Int,end:Int,mode:String):Boolean {
-        if(start<60||end>1440||end<=start||start%30!=0||end%30!=0)return false
+        if(start<0||end>1440||end<=start)return false
         val dateKey = if(mode=="weekly") "" else date
         val candidates=plans().filter { (it.mode=="weekly"&&it.weekday==weekday)||(it.mode!="weekly"&&it.date==date) }
         // Date-only replacement overrides matching subject weekly block; other overlaps still forbidden.
@@ -47,6 +46,23 @@ class Store(context: Context): SQLiteOpenHelper(context, DB_NAME, null, 1) {
         if(effective.any { start<it.endMinute&&end>it.startMinute })return false
         writableDatabase.insert("plan",null,ContentValues().apply {put("weekday",weekday);put("date",dateKey);put("subject_id",subjectId);put("start_min",start);put("end_min",end);put("mode",mode)})
         return true
+    }
+
+    /** Multiple weekday schedule creation is atomic: no partial save on conflicts. */
+    fun addWeeklyPlans(days:Set<Int>,subjectId:Long,start:Int,end:Int):Boolean {
+        if(days.isEmpty()||days.any{it !in 1..7}||start !in 0..1439||end>1440||end<=start||subjects().none{it.id==subjectId}) return false
+        val existing=plans()
+        if(existing.any{it.mode=="weekly"&&it.weekday in days&&start<it.endMinute&&end>it.startMinute})return false
+        val db=writableDatabase
+        db.beginTransaction()
+        return try {
+            for(day in days) {
+                val row=ContentValues().apply{put("weekday",day);put("date","");put("subject_id",subjectId);put("start_min",start);put("end_min",end);put("mode","weekly")}
+                if(db.insertOrThrow("plan",null,row)<0)error("insert failed")
+            }
+            db.setTransactionSuccessful()
+            true
+        }catch(_:Exception){false}finally{db.endTransaction()}
     }
     fun deletePlan(id:Long) { writableDatabase.delete("plan","id=?",arrayOf(id.toString())) }
     fun plansFor(date:LocalDate):List<Plan> {
